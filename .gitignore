@@ -4,3 +4,7 @@ build/
 .env
 .DS_Store
 *.log
+backend/data/
+*.db
+*.sqlite
+*.sqlite3
