@@ -92,7 +92,7 @@
             <el-table-column label="IP" prop="ip" width="130" />
             <el-table-column label="类型">
               <template #default="{ row }">
-                <el-tag :color="getDeviceTypeColor(row.type)" effect="light" size="small">
+                <el-tag :type="getDeviceTypeTagType(row.type)" size="small">
                   {{ getDeviceTypeLabel(row.type) }}
                 </el-tag>
               </template>
@@ -139,6 +139,7 @@ import {
   getDeviceIcon,
   getDeviceTypeLabel,
   getDeviceTypeColor,
+  getDeviceTypeTagType,
   relativeTime
 } from '@/utils/format'
 import { devices as deviceApi, traffic as trafficApi, alerts as alertApi } from '@/api'
@@ -205,7 +206,7 @@ async function loadAlerts() {
       }))
     }
     if (countRes.success && countRes.data !== undefined) {
-      stats.value.alerts = countRes.data.unread_count || countRes.data || 0
+      stats.value.alerts = countRes.data.total ?? countRes.data.unread_count ?? 0
     }
   } catch (e) {
     console.error('加载告警失败:', e)

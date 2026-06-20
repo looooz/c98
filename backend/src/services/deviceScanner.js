@@ -156,7 +156,88 @@ const MAC_OUI_MAP = {
   'FC:C2:DE': 'Apple Inc.',
   'FC:D6:BD': 'TP-Link Technologies',
   'FC:EC:DA': 'Xiaomi Communications',
-  'F0:DE:F1': 'TP-Link Technologies'
+  'F0:DE:F1': 'TP-Link Technologies',
+  '10:40:F3': 'Sony Interactive Entertainment',
+  '14:DA:E9': 'Sony Interactive Entertainment',
+  '1C:66:6D': 'Sony Interactive Entertainment',
+  '2C:AA:8E': 'Sony Interactive Entertainment',
+  '38:F1:81': 'Sony Interactive Entertainment',
+  '00:17:FA': 'Microsoft Corporation',
+  '00:1B:E8': 'Microsoft Corporation',
+  '00:22:48': 'Microsoft Corporation',
+  '00:50:F2': 'Intel Corporation',
+  '00:E0:4C': 'Realtek Semiconductor',
+  '00:13:EF': 'NVIDIA Corporation',
+  '00:15:AF': 'Canon Inc.',
+  '00:26:AB': 'Epson',
+  '00:80:77': 'Brother Industries',
+  '00:04:4B': 'Nintendo Co., Ltd.',
+  '00:23:CC': 'Nintendo Co., Ltd.',
+  '00:26:59': 'Nintendo Co., Ltd.',
+  '00:01:6C': 'Cisco Systems',
+  '00:0A:8A': 'Juniper Networks',
+  '00:0C:86': 'Fortinet Inc.',
+  '00:0D:B7': 'Ubiquiti Networks',
+  '00:18:0A': 'NETGEAR Inc.',
+  '00:1B:11': 'Dell Inc.',
+  '00:23:AE': 'Dell Inc.',
+  '00:26:B9': 'Hewlett-Packard',
+  '00:50:8B': 'IBM Corporation',
+  '00:50:C2': 'ASUSTeK Computer',
+  '00:1E:EC': 'LG Electronics',
+  '00:02:9B': 'Panasonic',
+  '00:03:DB': 'Sharp Corporation',
+  '00:04:7D': 'Toshiba Corporation',
+  '00:1E:34': 'Hikvision Digital Technology',
+  '00:26:96': 'Hikvision Digital Technology',
+  '00:60:53': 'Dahua Technology',
+  '00:12:41': 'Crestron Electronics',
+  '00:13:D3': 'Control4',
+  '00:15:66': 'Philips Lighting',
+  '00:17:88': 'Signify (Philips Hue)',
+  '00:1B:3C': 'Amazon Technologies',
+  '00:71:47': 'Amazon Technologies',
+  '48:5F:99': 'Meta Platforms',
+  '1C:EF:C1': 'Xiaomi Communications',
+  '20:AB:48': 'Xiaomi Communications',
+  '50:EC:50': 'Xiaomi Communications',
+  '60:14:8F': 'Xiaomi Communications',
+  '9C:9E:BD': 'Xiaomi Communications',
+  'A0:86:C6': 'Huawei Technologies',
+  'B0:D1:7E': 'Huawei Technologies',
+  'C8:94:BB': 'Huawei Technologies',
+  'D4:6D:6D': 'Huawei Technologies',
+  'E4:51:A2': 'Honor Device Co., Ltd.',
+  '00:E0:FC': 'Samsung Electronics',
+  '00:16:6F': 'Samsung Electronics',
+  '00:19:66': 'LG Electronics',
+  '00:1C:C2': 'LG Electronics',
+  '00:19:DB': 'Sichuan Changhong',
+  '00:1A:9D': 'Skyworth',
+  '00:1E:2C': 'Konka Group',
+  '00:24:DB': 'TCL Multimedia',
+  '00:20:80': 'Cisco Meraki',
+  '00:21:29': 'Belkin International',
+  '00:22:3F': 'Buffalo Technology',
+  '00:24:01': 'ASUSTeK Computer',
+  '00:24:A9': 'Gigabyte Technology',
+  '00:24:B6': 'Micro-Star International',
+  '00:26:73': 'Motorola Mobility',
+  '00:26:F1': 'OnePlus Technology',
+  '44:6E:E5': 'OPPO Electronics',
+  'C4:4B:7A': 'OPPO Electronics',
+  '78:DB:2F': 'vivo Mobile Communication',
+  'B8:B7:F1': 'Huawei Technologies',
+  '00:30:AB': 'Qualcomm Technologies',
+  '00:31:92': 'MediaTek Inc.',
+  '00:80:91': 'Bose Corporation',
+  '00:90:27': 'Sennheiser Electronic',
+  '00:A0:DE': 'Garmin Ltd.',
+  '04:03:D6': 'Fitbit Inc.',
+  '04:B7:6D': 'GoPro Inc.',
+  '05:05:1A': 'Roku Inc.',
+  '08:BD:43': 'Amazon Echo',
+  '0A:01:2F': 'Tesla Inc.'
 };
 
 const getVendorFromMac = (mac) => {
@@ -165,13 +246,157 @@ const getVendorFromMac = (mac) => {
   return MAC_OUI_MAP[oui] || 'Unknown Vendor';
 };
 
-const detectOSByTTL = (ttl) => {
+const detectOSByTTL = (ttl, vendor, hostname) => {
+  const vl = (vendor || '').toLowerCase();
+  const hl = (hostname || '').toLowerCase();
+
+  if (vl.includes('apple') || vl.includes('iphone') || vl.includes('ipad') || vl.includes('macbook')) {
+    if (hl.includes('iphone') || hl.includes('ipad') || hl.includes('ios')) {
+      return 'iOS';
+    }
+    if (hl.includes('mac') || hl.includes('macbook') || hl.includes('imac') || hl.includes('macos')) {
+      return 'macOS';
+    }
+    if (ttl !== undefined && ttl !== null) {
+      if (ttl >= 120 && ttl <= 130) return 'iOS';
+      if (ttl >= 60 && ttl <= 70) return 'macOS';
+    }
+    return 'Apple Device';
+  }
+
+  if (vl.includes('huawei') || vl.includes('honor') || vl.includes('xiaomi') || vl.includes('oppo') || 
+      vl.includes('vivo') || vl.includes('samsung') || vl.includes('oneplus') || vl.includes('motorola')) {
+    if (hl.includes('android') || hl.includes('phone') || hl.includes('mobile')) {
+      return 'Android';
+    }
+    if (ttl !== undefined && ttl !== null && ttl >= 60 && ttl <= 70) {
+      return 'Android';
+    }
+  }
+
+  if (hl.includes('windows') || hl.includes('pc') || hl.includes('desktop') || hl.includes('laptop')) {
+    return 'Windows';
+  }
+
+  if (hl.includes('linux') || hl.includes('ubuntu') || hl.includes('debian') || hl.includes('centos') || 
+      hl.includes('raspberry') || hl.includes('pi') || hl.includes('openwrt') || hl.includes('lede')) {
+    if (hl.includes('raspberry') || hl.includes('pi')) return 'Raspberry Pi OS';
+    if (hl.includes('openwrt') || hl.includes('lede')) return 'OpenWrt';
+    return 'Linux';
+  }
+
   if (ttl === undefined || ttl === null) return 'Unknown';
   if (ttl >= 250) return 'Linux/Unix';
   if (ttl >= 120) return 'macOS/iOS';
   if (ttl >= 60) return 'Windows';
   if (ttl >= 30) return 'IoT Device';
   return 'Unknown';
+};
+
+const inferDeviceType = (vendor, os, hostname, mac, ip) => {
+  const vl = (vendor || '').toLowerCase();
+  const ol = (os || '').toLowerCase();
+  const hl = (hostname || '').toLowerCase();
+
+  if (ip && (ip.endsWith('.1') || ip.endsWith('.254'))) {
+    return 'router';
+  }
+
+  if (vl.includes('cisco') || vl.includes('tplink') || vl.includes('netgear') || (vl.includes('huawei') && !ol.includes('android') && !ol.includes('ios')) ||
+      vl.includes('ubiquiti') || vl.includes('fortinet') || vl.includes('juniper') || vl.includes('dlink') ||
+      vl.includes('belkin') || vl.includes('buffalo') || vl.includes('meraki') ||
+      hl.includes('router') || hl.includes('gateway') || hl.includes('modem') || hl.includes('ap') ||
+      hl.includes('wifi') || hl.includes('openwrt') || hl.includes('lede') ||
+      hl.includes('miwifi') || hl.includes('tplinkwifi') || hl.includes('tenda')) {
+    return 'router';
+  }
+
+  if (vl.includes('apple') && (ol === 'ios' || hl.includes('iphone') || hl.includes('ipad'))) {
+    if (hl.includes('ipad')) return 'tablet';
+    return 'phone';
+  }
+
+  if ((vl.includes('samsung') || vl.includes('xiaomi') || vl.includes('huawei') || vl.includes('honor') ||
+       vl.includes('oppo') || vl.includes('vivo') || vl.includes('oneplus') || vl.includes('motorola') ||
+       (vl.includes('google') && !vl.includes('nest') && !vl.includes('home'))) && 
+      (ol === 'android' || ol.includes('android') || hl.includes('phone') || hl.includes('mobile'))) {
+    if (hl.includes('tab') || hl.includes('tablet') || hl.includes('pad')) return 'tablet';
+    return 'phone';
+  }
+
+  if (hl.includes('ipad') || hl.includes('tablet') || hl.includes('tab') || hl.includes('pad')) {
+    return 'tablet';
+  }
+
+  if (ol === 'windows' || ol === 'macos' || ol === 'linux' || 
+      hl.includes('pc') || hl.includes('desktop') || hl.includes('laptop') || hl.includes('notebook') ||
+      hl.includes('macbook') || hl.includes('imac') || hl.includes('thinkpad') ||
+      vl.includes('dell') || vl.includes('hp') || vl.includes('hewlett') || vl.includes('lenovo') || vl.includes('asus') || 
+      vl.includes('acer') || vl.includes('msi') || vl.includes('gigabyte') || vl.includes('microsoft') ||
+      vl.includes('intel') || vl.includes('nvidia') ||
+      hl.includes('raspberry') || hl.includes('pi') ||
+      (vl.includes('apple') && (ol === 'macos' || hl.includes('mac')))) {
+    return 'computer';
+  }
+
+  if (hl.includes('tv') || hl.includes('television') || hl.includes('tvbox') || hl.includes('box') ||
+      vl.includes('tcl') || vl.includes('skyworth') || vl.includes('hisense') || vl.includes('changhong') ||
+      vl.includes('konka') || (vl.includes('sony') && !vl.includes('playstation')) ||
+      hl.includes('roku') || hl.includes('firetv') || hl.includes('chromecast') || hl.includes('apple-tv') ||
+      hl.includes('mi-tv') || hl.includes('mitv') || hl.includes('mibox') ||
+      (vl.includes('xiaomi') && (hl.includes('tv') || hl.includes('box')))) {
+    return 'tv';
+  }
+
+  if (hl.includes('playstation') || hl.includes('ps4') || hl.includes('ps5') || hl.includes('ps3') ||
+      hl.includes('xbox') || (hl.includes('switch') && !hl.includes('network')) || hl.includes('nintendo') ||
+      vl.includes('sony interactive') || vl.includes('nintendo')) {
+    return 'console';
+  }
+
+  if (hl.includes('camera') || hl.includes('cctv') || hl.includes('ipc') || hl.includes('ipcam') ||
+      vl.includes('hikvision') || vl.includes('dahua') || vl.includes('axis') || vl.includes('honeywell')) {
+    return 'camera';
+  }
+
+  if (hl.includes('alexa') || hl.includes('echo') || hl.includes('homepod') || hl.includes('google-home') ||
+      hl.includes('小爱') || hl.includes('小度') || hl.includes('天猫精灵') || hl.includes('speaker') ||
+      hl.includes('light') || hl.includes('bulb') || hl.includes('plug') || hl.includes('socket') ||
+      (hl.includes('switch') && !hl.includes('nintendo') && !hl.includes('network')) || hl.includes('sensor') || hl.includes('detector') ||
+      hl.includes('thermostat') || hl.includes('climate') || hl.includes('curtain') || hl.includes('door') ||
+      hl.includes('lock') || (hl.includes('camera') && (vl.includes('xiaomi') || vl.includes('mi'))) ||
+      vl.includes('signify') || vl.includes('philips lighting') || vl.includes('crestron') || 
+      vl.includes('control4') || (vl.includes('amazon') && hl.includes('echo')) ||
+      (vl.includes('google') && (hl.includes('nest') || hl.includes('home')))) {
+    return 'smart_home';
+  }
+
+  if (hl.includes('printer') || hl.includes('print') || 
+      vl.includes('canon') || vl.includes('epson') || vl.includes('brother')) {
+    return 'smart_home';
+  }
+
+  if (hl.includes('nas') || hl.includes('storage') || hl.includes('synology') || hl.includes('qnap')) {
+    return 'computer';
+  }
+
+  if (ol === 'ios' || ol === 'android') {
+    return 'phone';
+  }
+
+  if (vl.includes('xiaomi') || vl.includes('mi')) {
+    return 'phone';
+  }
+
+  if (vl.includes('samsung')) {
+    return 'phone';
+  }
+
+  if (vl.includes('huawei') || vl.includes('honor')) {
+    return 'phone';
+  }
+
+  return 'unknown';
 };
 
 const ipToLong = (ipStr) => {
@@ -253,8 +478,10 @@ const detectDeviceInfo = async (ipAddr, macAddr) => {
     ip: ipAddr,
     mac: macAddr || null,
     name: null,
+    hostname: null,
     vendor: 'Unknown Vendor',
     os: 'Unknown',
+    device_type: 'unknown',
     ttl: null,
     isOnline: true,
     lastSeen: Date.now()
@@ -272,7 +499,6 @@ const detectDeviceInfo = async (ipAddr, macAddr) => {
       if (pingRes.time !== undefined) {
         result.ttl = Math.round(255 - pingRes.time * 0.1);
       }
-      result.os = detectOSByTTL(result.ttl);
       result.lastSeen = Date.now();
     }
   } catch (err) {
@@ -282,19 +508,26 @@ const detectDeviceInfo = async (ipAddr, macAddr) => {
   try {
     const hostname = await reverseDnsLookup(ipAddr);
     if (hostname) {
+      result.hostname = hostname;
       result.name = hostname;
     }
   } catch (err) {
   }
 
+  result.os = detectOSByTTL(result.ttl, result.vendor, result.hostname);
+
+  result.device_type = inferDeviceType(result.vendor, result.os, result.hostname, macAddr, ipAddr);
+
   if (!result.name && result.vendor !== 'Unknown Vendor') {
     const vendorShorthand = result.vendor.split(' ')[0].toLowerCase();
-    const rand = Math.floor(Math.random() * 1000);
-    result.name = `${vendorShorthand}-${rand.toString().padStart(3, '0')}`;
+    const typeLabel = result.device_type !== 'unknown' ? result.device_type : 'device';
+    const ipSuffix = ipAddr.split('.').slice(-2).join('-');
+    result.name = `${vendorShorthand}-${typeLabel}-${ipSuffix}`;
   }
 
   if (!result.name) {
-    result.name = `device-${ipAddr.split('.').slice(-2).join('-')}`;
+    const typeLabel = result.device_type !== 'unknown' ? result.device_type : 'device';
+    result.name = `${typeLabel}-${ipAddr.split('.').slice(-2).join('-')}`;
   }
 
   return result;
@@ -681,9 +914,9 @@ module.exports = {
   getLocalNetworkInfo,
   parseArpOutput,
   detectDeviceInfo,
-  mockScan,
   getVendorFromMac,
   detectOSByTTL,
+  inferDeviceType,
   ipToLong,
   longToIp
 };

@@ -96,7 +96,7 @@
         </el-table-column>
         <el-table-column label="类型" width="100">
           <template #default="{ row }">
-            <el-tag :color="getDeviceTypeColor(row.device_type || row.type)" effect="light" size="small">
+            <el-tag :type="getDeviceTypeTagType(row.device_type || row.type)" size="small">
               {{ getDeviceTypeLabel(row.device_type || row.type) }}
             </el-tag>
           </template>
@@ -163,6 +163,68 @@
         <el-button type="primary" @click="saveDevice">确定</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showDetailDialog" title="设备详情" width="600px">
+      <div v-if="selectedDevice" class="device-detail">
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="设备名称" :span="2">
+            <div class="device-title">
+              <el-avatar :size="48" :style="{ background: getDeviceTypeColor(selectedDevice.device_type || selectedDevice.type) + '20' }">
+                <span style="font-size: 24px">{{ getDeviceIcon(selectedDevice.device_type || selectedDevice.type) }}</span>
+              </el-avatar>
+              <div class="device-name-info">
+                <div class="device-main-name">{{ selectedDevice.custom_name || selectedDevice.hostname || selectedDevice.name || selectedDevice.ip }}</div>
+                <div class="device-sub-info">
+                  <el-tag :type="selectedDevice.is_online ? 'success' : 'info'" size="small">
+                    {{ selectedDevice.is_online ? '在线' : '离线' }}
+                  </el-tag>
+                  <el-tag :type="getDeviceTypeTagType(selectedDevice.device_type || selectedDevice.type)" size="small" style="margin-left: 8px">
+                    {{ getDeviceTypeLabel(selectedDevice.device_type || selectedDevice.type) }}
+                  </el-tag>
+                </div>
+              </div>
+            </div>
+          </el-descriptions-item>
+          <el-descriptions-item label="IP 地址">
+            <span class="monospace">{{ selectedDevice.ip }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="MAC 地址">
+            <span class="monospace">{{ formatMac(selectedDevice.mac) }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="设备厂商">
+            <div class="vendor-info">
+              <span>{{ getVendorLogo(selectedDevice.vendor) }}</span>
+              <span style="margin-left: 6px">{{ selectedDevice.vendor || '未知' }}</span>
+            </div>
+          </el-descriptions-item>
+          <el-descriptions-item label="操作系统">
+            <span>{{ selectedDevice.os_info || '未知' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="设备分组">
+            <span>{{ selectedDevice.group_name || '未分组' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="主机名">
+            <span>{{ selectedDevice.hostname || '-' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="首次发现">
+            <span>{{ formatDateTime(selectedDevice.first_seen) }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="最近在线">
+            <span>{{ formatDateTime(selectedDevice.last_seen) }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="信号强度">
+            <span>{{ selectedDevice.signal_strength ? selectedDevice.signal_strength + ' dBm' : '-' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="备注" :span="2">
+            <span>{{ selectedDevice.notes || '暂无备注' }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <template #footer>
+        <el-button @click="showDetailDialog = false">关闭</el-button>
+        <el-button type="primary" @click="editFromDetail">编辑</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -177,6 +239,7 @@ import {
   getDeviceIcon,
   getDeviceTypeLabel,
   getDeviceTypeColor,
+  getDeviceTypeTagType,
   getVendorLogo,
   getDeviceTypeList
 } from '@/utils/format'
@@ -189,8 +252,10 @@ const filterStatus = ref('')
 const page = ref(1)
 const pageSize = ref(10)
 const showDialog = ref(false)
+const showDetailDialog = ref(false)
 const dialogTitle = ref('编辑设备')
 const editingDevice = ref(null)
+const selectedDevice = ref(null)
 const deviceList = ref([])
 const total = ref(0)
 const lastScanTime = ref(null)
@@ -285,18 +350,59 @@ async function saveDevice() {
 }
 
 function viewDetail(row) {
-  const name = row.custom_name || row.hostname || row.name || row.ip
-  ElMessageBox.alert(
-    `设备名称: ${name}\nIP: ${row.ip}\nMAC: ${formatMac(row.mac)}\n厂商: ${row.vendor || '未知'}\n类型: ${getDeviceTypeLabel(row.device_type || row.type)}\n系统: ${row.os_info || '未知'}\n首次发现: ${formatDateTime(row.first_seen)}\n最近在线: ${formatDateTime(row.last_seen)}\n状态: ${row.is_online ? '在线' : '离线'}`,
-    '设备详情',
-    { confirmButtonText: '关闭' }
-  )
+  selectedDevice.value = row
+  showDetailDialog.value = true
+}
+
+function editFromDetail() {
+  showDetailDialog.value = false
+  editDevice(selectedDevice.value)
 }
 
 onMounted(() => {
   loadData()
 })
 </script>
+
+<style scoped>
+.device-detail {
+  padding: 10px 0;
+}
+
+.device-title {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.device-name-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.device-main-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.device-sub-info {
+  display: flex;
+  align-items: center;
+}
+
+.vendor-info {
+  display: flex;
+  align-items: center;
+}
+
+.monospace {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  color: #606266;
+}
+</style>
 
 <style scoped>
 .mb-4 {

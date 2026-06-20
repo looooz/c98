@@ -7,7 +7,7 @@ const cron = require('node-cron');
 
 const { initializeDatabase, getQuery, runQuery, allQuery } = require('./database');
 const { initWebSocket, broadcast, broadcastScanProgress, broadcastOnlineStatus, broadcastTrafficUpdate, broadcastAlert } = require('./websocket');
-const { scanLocalNetwork, scanIpRange, getVendorFromMac, getLocalNetworkInfo } = require('./services/deviceScanner');
+const { scanLocalNetwork, scanIpRange, getVendorFromMac, getLocalNetworkInfo, inferDeviceType, detectOSByTTL } = require('./services/deviceScanner');
 
 const PORT = process.env.PORT || 3098;
 const WS_PORT = process.env.WS_PORT || 3099;
@@ -186,9 +186,9 @@ async function performRealScanAndSave() {
 
       const vendor = dev.vendor || (mac ? getVendorFromMac(mac) : null) || 'Unknown';
       const isOnline = dev.isOnline !== false ? 1 : 0;
-      const deviceType = inferDeviceType(dev.type || dev.device_type || dev.category, vendor, dev.os);
       const hostname = dev.hostname || dev.name || null;
-      const osInfo = dev.os || dev.os_info || null;
+      const osInfo = dev.os || dev.os_info || detectOSByTTL(dev.ttl, vendor, hostname);
+      const deviceType = inferDeviceType(vendor, osInfo, hostname, mac, dev.ip);
 
       if (existing) {
         await runQuery(
@@ -235,39 +235,6 @@ async function performRealScanAndSave() {
     console.error('[Init] 真实扫描初始化失败:', e.message);
     return { count: 0, method: 'failed', error: e.message };
   }
-}
-
-function inferDeviceType(type, vendor, os) {
-  if (!type) {
-    const vl = (vendor || '').toLowerCase();
-    const ol = (os || '').toLowerCase();
-    if (ol.includes('ios') || vl.includes('apple') && (ol.includes('phone') || type === 'smartphone')) return 'phone';
-    if (ol.includes('tv') || type === 'smarttv' || type === 'tvbox') return 'tv';
-    if (type === 'console' || ol.includes('playstation') || ol.includes('switch') || ol.includes('xbox')) return 'console';
-    if (type === 'camera' || vl.includes('hikvision') || vl.includes('dahua') || type === 'cctv') return 'camera';
-    if (type === 'router' || type === 'gateway' || vl.includes('cisco') || vl.includes('tplink') || vl.includes('huawei') && type !== 'phone') return 'router';
-    if (type === 'smartspeaker' || type === 'light' || type === 'plug' || type === 'climate' || type === 'security' || type === 'sensor') return 'smart_home';
-    if (type === 'laptop' || type === 'desktop' || type === 'sbc' || ol.includes('windows') || ol.includes('macos') || ol.includes('linux')) return 'computer';
-    if (type === 'smartphone' || type === 'mobile' || ol.includes('android')) return 'phone';
-    if (type === 'tablet') return 'tablet';
-    if (type === 'nas' || type === 'storage') return 'computer';
-    if (type === 'iot' || type === 'peripheral' || type === 'printer') return 'smart_home';
-    return 'unknown';
-  }
-  const typeMap = {
-    router: 'router', gateway: 'router',
-    smartphone: 'phone', phone: 'phone', mobile: 'phone',
-    tablet: 'tablet',
-    laptop: 'computer', desktop: 'computer', sbc: 'computer', pc: 'computer',
-    smarttv: 'tv', tvbox: 'tv', tv: 'tv',
-    console: 'console',
-    camera: 'camera', cctv: 'camera',
-    smartspeaker: 'smart_home', light: 'smart_home', plug: 'smart_home',
-    climate: 'smart_home', security: 'smart_home', iot: 'smart_home', sensor: 'smart_home',
-    nas: 'computer', storage: 'computer',
-    printer: 'smart_home', peripheral: 'smart_home'
-  };
-  return typeMap[type] || 'unknown';
 }
 
 const trafficState = {
