@@ -86,11 +86,11 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="vendor" label="厂商" width="140">
+        <el-table-column label="厂商" width="140">
           <template #default="{ row }">
             <div class="vendor-info">
               <span>{{ getVendorLogo(row.vendor) }}</span>
-              <span>{{ row.vendor || '未知' }}</span>
+              <span>{{ formatVendor(row.vendor) }}</span>
             </div>
           </template>
         </el-table-column>
@@ -102,7 +102,7 @@
           </template>
         </el-table-column>
         <el-table-column label="操作系统" width="110">
-          <template #default="{ row }">{{ row.os_info || '-' }}</template>
+          <template #default="{ row }">{{ formatOS(row.os_info) }}</template>
         </el-table-column>
         <el-table-column prop="first_seen" label="首次发现" width="170">
           <template #default="{ row }">{{ formatDateTime(row.first_seen) }}</template>
@@ -194,11 +194,11 @@
           <el-descriptions-item label="设备厂商">
             <div class="vendor-info">
               <span>{{ getVendorLogo(selectedDevice.vendor) }}</span>
-              <span style="margin-left: 6px">{{ selectedDevice.vendor || '未知' }}</span>
+              <span style="margin-left: 6px">{{ formatVendor(selectedDevice.vendor) }}</span>
             </div>
           </el-descriptions-item>
           <el-descriptions-item label="操作系统">
-            <span>{{ selectedDevice.os_info || '未知' }}</span>
+            <span>{{ formatOS(selectedDevice.os_info) }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="设备分组">
             <span>{{ selectedDevice.group_name || '未分组' }}</span>
@@ -235,6 +235,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   formatMac,
   formatDateTime,
+  formatVendor,
+  formatOS,
   relativeTime,
   getDeviceIcon,
   getDeviceTypeLabel,

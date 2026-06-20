@@ -93,26 +93,28 @@
       <el-table :data="filteredDevices" v-loading="loading" stripe>
         <el-table-column label="图标" width="60" align="center">
           <template #default="{ row }">
-            <span class="device-emoji">{{ getDeviceIcon(row.type) }}</span>
+            <span class="device-emoji">{{ getDeviceIcon(row.device_type || row.type) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="ip" label="IP 地址" width="140" />
         <el-table-column prop="mac" label="MAC 地址" width="170">
           <template #default="{ row }">{{ formatMac(row.mac) }}</template>
         </el-table-column>
-        <el-table-column prop="name" label="主机名" min-width="150" />
-        <el-table-column prop="vendor" label="厂商" min-width="150">
+        <el-table-column label="主机名" min-width="150">
+          <template #default="{ row }">{{ row.hostname || row.custom_name || row.name || row.ip }}</template>
+        </el-table-column>
+        <el-table-column label="厂商" min-width="150">
           <template #default="{ row }">
             <div class="vendor-cell">
               <span>{{ getVendorLogo(row.vendor) }}</span>
-              <span>{{ row.vendor || '未知' }}</span>
+              <span>{{ formatVendor(row.vendor) }}</span>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="类型" width="100">
+        <el-table-column label="类型" width="120">
           <template #default="{ row }">
             <el-select
-              v-model="row.type"
+              v-model="row.device_type"
               size="small"
               @change="onTypeChange(row)"
               placeholder="选择类型"
@@ -130,8 +132,8 @@
         </el-table-column>
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.online ? 'success' : 'info'">
-              {{ row.online ? '在线' : '离线' }}
+            <el-tag size="small" :type="(row.is_online ?? row.online) ? 'success' : 'info'">
+              {{ (row.is_online ?? row.online) ? '在线' : '离线' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -155,6 +157,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import ws from '@/utils/websocket'
 import {
   formatMac,
+  formatVendor,
   getDeviceIcon,
   getVendorLogo,
   getDeviceTypeList
@@ -186,7 +189,7 @@ const filteredDevices = computed(() => {
   const q = searchText.value.toLowerCase()
   return deviceList.value.filter(d =>
     d.ip.includes(q) ||
-    d.name.toLowerCase().includes(q) ||
+    (d.hostname || d.custom_name || d.name || '').toLowerCase().includes(q) ||
     (d.vendor && d.vendor.toLowerCase().includes(q)) ||
     (d.mac && d.mac.toLowerCase().includes(q))
   )
@@ -259,7 +262,7 @@ async function startScan() {
 }
 
 function onTypeChange(row) {
-  devices.setType(row.id, row.type).then(() => {
+  devices.setType(row.id, row.device_type || row.type).then(() => {
     ElMessage.success('设备类型已更新')
   }).catch(() => {
     ElMessage.error('更新失败')
@@ -268,14 +271,14 @@ function onTypeChange(row) {
 
 function editDevice(row) {
   ElMessageBox.prompt('请输入设备名称', '编辑设备', {
-    inputValue: row.name,
+    inputValue: row.custom_name || row.hostname || row.name || '',
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     inputPattern: /.+/,
     inputErrorMessage: '名称不能为空'
   }).then(({ value }) => {
     devices.setName(row.id, value).then(() => {
-      row.name = value
+      row.custom_name = value
       ElMessage.success('修改成功')
     }).catch(() => {
       ElMessage.error('修改失败')
@@ -285,7 +288,7 @@ function editDevice(row) {
 
 function addToDevices(row) {
   deviceStore.addDevice(row)
-  ElMessage.success(`已添加设备：${row.name || row.ip}`)
+  ElMessage.success(`已添加设备：${row.custom_name || row.hostname || row.name || row.ip}`)
 }
 
 let scanProgressHandler = null

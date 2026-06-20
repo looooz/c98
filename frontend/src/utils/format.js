@@ -237,7 +237,7 @@ export function getDeviceTypeTagType(type) {
 }
 
 export function getVendorLogo(vendor) {
-  if (!vendor) return VENDOR_LOGOS.default
+  if (!vendor || vendor === 'Unknown' || vendor === 'Unknown Vendor') return VENDOR_LOGOS.default
 
   const vendorLower = vendor.toLowerCase()
   for (const [key, logo] of Object.entries(VENDOR_LOGOS)) {
@@ -246,6 +246,28 @@ export function getVendorLogo(vendor) {
     }
   }
   return VENDOR_LOGOS.default
+}
+
+export function formatVendor(vendor) {
+  if (!vendor || vendor === 'Unknown' || vendor === 'Unknown Vendor') return '未知厂商'
+  return vendor
+}
+
+export function formatOS(os) {
+  if (!os || os === 'Unknown') return '未知系统'
+  const osMap = {
+    'Windows': 'Windows',
+    'macOS': 'macOS',
+    'iOS': 'iOS',
+    'Android': 'Android',
+    'Linux': 'Linux',
+    'Linux/Unix': 'Linux/Unix',
+    'macOS/iOS': 'macOS/iOS',
+    'Raspberry Pi OS': '树莓派系统',
+    'OpenWrt': 'OpenWrt',
+    'IoT Device': 'IoT 设备'
+  }
+  return osMap[os] || os
 }
 
 export function getDeviceTypeList() {
@@ -316,6 +338,8 @@ export default {
   formatTime,
   formatMac,
   formatIp,
+  formatVendor,
+  formatOS,
   getDeviceTypeLabel,
   getDeviceTypeColor,
   getDeviceIcon,
