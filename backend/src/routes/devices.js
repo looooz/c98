@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { runQuery, getQuery, allQuery } = require('../database');
 const { broadcast, broadcastScanProgress, broadcastAlert } = require('../websocket');
-const { scanLocalNetwork, scanIpRange, mockScan, getLocalNetworkInfo, getVendorFromMac } = require('../services/deviceScanner');
+const { scanLocalNetwork, scanIpRange, getLocalNetworkInfo, getVendorFromMac } = require('../services/deviceScanner');
 
 const buildResponse = (success, data = null, message = '', error = '') => {
   const resp = { success, message };
@@ -272,7 +272,7 @@ const saveDevicesToDb = async (deviceList) => {
 
 router.post('/scan', async (req, res) => {
   try {
-    const { ipRange, useMock = false } = req.body;
+    const { ipRange } = req.body;
 
     if (scanProgress.running) {
       return res.status(409).json(buildResponse(false, null, '扫描正在进行中', 'SCANNING'));
@@ -289,7 +289,7 @@ router.post('/scan', async (req, res) => {
       message: '开始扫描局域网设备...', timestamp: new Date().toISOString()
     });
 
-    res.json(buildResponse(true, { started: true, ipRange, useMock }, '扫描已启动'));
+    res.json(buildResponse(true, { started: true, ipRange }, '扫描已启动'));
 
     setImmediate(async () => {
       try {
@@ -297,44 +297,23 @@ router.post('/scan', async (req, res) => {
         let scannedDevices;
         let scanMethod = '';
 
-        if (useMock) {
-          scanMethod = 'mock';
-          scannedDevices = mockScan();
-          scanProgress.current = 60; scanProgress.total = 100;
-          broadcastScanProgress({ running: true, status: 'scanning', current: 60, total: 100, message: '模拟扫描数据生成中 (60%)' });
-          await new Promise(r => setTimeout(r, 400));
-        } else if (ipRange) {
+        if (ipRange) {
           scanMethod = 'range';
           const [startIp, endIp] = ipRange.split(/[-~]/).map(s => s.trim());
           broadcastScanProgress({ running: true, status: 'scanning', current: 10, total: 100, message: `正在扫描范围: ${startIp} - ${endIp}` });
-          try {
-            scannedDevices = await scanIpRange(startIp, endIp, (progress) => {
-              const pct = Math.round(progress * 0.8 + 10);
-              scanProgress.current = pct;
-              if (pct % 10 === 0) {
-                broadcastScanProgress({ running: true, status: 'scanning', current: pct, total: 100, message: `扫描进度 ${pct}%` });
-              }
-            });
-          } catch (e) {
-            console.log('范围扫描失败，回退到模拟:', e.message);
-            scanMethod = 'mock-fallback';
-            scannedDevices = mockScan();
-          }
+          scannedDevices = await scanIpRange(startIp, endIp, (progress) => {
+            const pct = Math.round(progress * 0.8 + 10);
+            scanProgress.current = pct;
+            if (pct % 10 === 0) {
+              broadcastScanProgress({ running: true, status: 'scanning', current: pct, total: 100, message: `扫描进度 ${pct}%` });
+            }
+          });
         } else {
           scanMethod = 'local';
           broadcastScanProgress({ running: true, status: 'scanning', current: 15, total: 100, message: '正在扫描本地网络...' });
-          try {
-            scannedDevices = await scanLocalNetwork();
-            if (!scannedDevices || scannedDevices.length === 0) {
-              throw new Error('未扫描到设备');
-            }
-          } catch (e) {
-            console.log('本地扫描失败，回退到模拟:', e.message);
-            scanMethod = 'mock-fallback';
-            scannedDevices = mockScan();
-          }
+          scannedDevices = await scanLocalNetwork();
           scanProgress.current = 75;
-          broadcastScanProgress({ running: true, status: 'processing', current: 75, total: 100, message: `发现 ${scannedDevices.length} 台设备，正在写入数据库...` });
+          broadcastScanProgress({ running: true, status: 'processing', current: 75, total: 100, message: `发现 ${scannedDevices ? scannedDevices.length : 0} 台设备，正在写入数据库...` });
         }
 
         scanProgress.found = scannedDevices;

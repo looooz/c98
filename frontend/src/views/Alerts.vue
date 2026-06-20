@@ -59,18 +59,18 @@
         <div class="flex-between">
           <div class="card-title">告警列表</div>
           <div class="flex gap-2">
-            <el-select v-model="filterLevel" placeholder="级别" clearable style="width: 130px" size="default">
+            <el-select v-model="filterLevel" placeholder="级别" clearable style="width: 130px" size="default" @change="handleFilterChange">
               <el-option label="严重" value="critical" />
               <el-option label="高" value="high" />
               <el-option label="中" value="medium" />
               <el-option label="低" value="low" />
             </el-select>
-            <el-select v-model="filterRead" placeholder="状态" clearable style="width: 130px">
+            <el-select v-model="filterRead" placeholder="状态" clearable style="width: 130px" @change="handleFilterChange">
               <el-option label="未读" value="unread" />
               <el-option label="已读" value="read" />
               <el-option label="已处理" value="resolved" />
             </el-select>
-            <el-input v-model="searchText" placeholder="搜索..." style="width: 200px" clearable>
+            <el-input v-model="searchText" placeholder="搜索..." style="width: 200px" clearable @clear="handleSearch" @keyup.enter="handleSearch">
               <template #prefix><el-icon><Search /></el-icon></template>
             </el-input>
             <el-button :icon="Check" @click="markAllRead">全部已读</el-button>
@@ -80,7 +80,7 @@
       </template>
 
       <el-table
-        :data="filteredAlerts"
+        :data="alerts"
         v-loading="loading"
         @selection-change="onSelectionChange"
         stripe
@@ -167,9 +167,11 @@
           v-model:current-page="page"
           v-model:page-size="pageSize"
           :page-sizes="[10, 20, 50, 100]"
-          :total="filteredAlerts.length"
+          :total="total"
           layout="total, sizes, prev, pager, next, jumper"
           background
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
         />
       </div>
     </el-card>
@@ -227,6 +229,7 @@ import { ref, computed, reactive, onMounted } from 'vue'
 import { Search, Check, Delete } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { formatDateTime, relativeTime, getDeviceIcon } from '@/utils/format'
+import { alerts as alertsApi } from '@/api'
 
 const loading = ref(false)
 const searchText = ref('')
@@ -234,98 +237,17 @@ const filterLevel = ref('')
 const filterRead = ref('')
 const page = ref(1)
 const pageSize = ref(20)
+const total = ref(0)
 const showDetail = ref(false)
 const current = ref(null)
 const selection = ref([])
+const alerts = ref([])
 
 const stats = reactive({
-  total: 128,
-  unread: 7,
-  resolved: 85,
-  trend: '-32%'
-})
-
-const now = Date.now()
-function makeAlerts() {
-  const types = ['traffic', 'device', 'intrusion', 'rule', 'system', 'vulnerability']
-  const levels = ['low', 'low', 'medium', 'medium', 'medium', 'high', 'high', 'critical']
-  const templates = {
-    traffic: [
-      '检测到异常大流量：下载速率超过阈值',
-      '端口出现异常流量峰值',
-      '某设备流量占用超过 80% 带宽'
-    ],
-    device: [
-      '检测到新设备接入网络',
-      '设备长时间离线后重新上线',
-      '设备 MAC 地址出现异常变化'
-    ],
-    intrusion: [
-      '检测到端口扫描行为',
-      '检测到可疑的 SSH 暴力破解尝试',
-      '检测到异常的 DNS 请求'
-    ],
-    rule: [
-      '家长控制规则已生效',
-      '设备违反访问策略，已被拦截',
-      '时段限制规则已启动'
-    ],
-    system: [
-      'CPU 使用率超过 85%',
-      '内存使用率超过 90%',
-      '磁盘空间不足 20%',
-      '服务重启完成'
-    ],
-    vulnerability: [
-      '检测到存在已知漏洞的固件版本',
-      '开放了高风险端口',
-      '检测到弱密码使用'
-    ]
-  }
-  const deviceNames = ['小明的 iPhone', 'MacBook Pro', '小米电视', 'iPad Air', 'PS5', '妈妈的手机', '摄像头-客厅', '智能门锁', '主路由器', '未知设备']
-  const deviceTypes = ['phone', 'computer', 'tv', 'tablet', 'console', 'phone', 'camera', 'smart_home', 'router', 'unknown']
-
-  const arr = []
-  for (let i = 0; i < 50; i++) {
-    const type = types[Math.floor(Math.random() * types.length)]
-    const level = levels[Math.floor(Math.random() * levels.length)]
-    const devIdx = Math.floor(Math.random() * deviceNames.length)
-    arr.push({
-      id: i + 1,
-      level,
-      type,
-      message: templates[type][Math.floor(Math.random() * templates[type].length)],
-      detail: '这是告警详细描述，包括触发条件、上下文信息和建议处理方案等。请根据实际情况采取相应措施。',
-      deviceName: deviceNames[devIdx],
-      deviceType: deviceTypes[devIdx],
-      sourceIp: `192.168.1.${100 + devIdx}`,
-      targetIp: Math.random() > 0.5 ? `10.0.0.${Math.floor(Math.random() * 255)}` : '',
-      time: now - Math.floor(Math.random() * 86400000 * 7),
-      read: i >= 7,
-      resolved: i >= 25
-    })
-  }
-  return arr.sort((a, b) => b.time - a.time)
-}
-
-const alerts = ref(makeAlerts())
-
-const filteredAlerts = computed(() => {
-  return alerts.value.filter(a => {
-    if (filterLevel.value && a.level !== filterLevel.value) return false
-    if (filterRead.value === 'unread' && a.read) return false
-    if (filterRead.value === 'read' && (!a.read || a.resolved)) return false
-    if (filterRead.value === 'resolved' && !a.resolved) return false
-    if (searchText.value) {
-      const q = searchText.value.toLowerCase()
-      if (!a.message.toLowerCase().includes(q) &&
-          !(a.deviceName || '').toLowerCase().includes(q) &&
-          !(a.sourceIp || '').includes(q)) {
-        return false
-      }
-    }
-    return true
-  })
+  total: 0,
+  unread: 0,
+  resolved: 0,
+  trend: '-'
 })
 
 const levelPieOption = computed(() => ({
@@ -338,10 +260,10 @@ const levelPieOption = computed(() => ({
     itemStyle: { borderRadius: 6, borderWidth: 2, borderColor: '#fff' },
     label: { formatter: '{b}\n{d}%' },
     data: [
-      { value: 3, name: '严重', itemStyle: { color: '#8B0000' } },
-      { value: 15, name: '高', itemStyle: { color: '#f56c6c' } },
-      { value: 40, name: '中', itemStyle: { color: '#e6a23c' } },
-      { value: 70, name: '低', itemStyle: { color: '#909399' } }
+      { value: 0, name: '严重', itemStyle: { color: '#8B0000' } },
+      { value: 0, name: '高', itemStyle: { color: '#f56c6c' } },
+      { value: 0, name: '中', itemStyle: { color: '#e6a23c' } },
+      { value: 0, name: '低', itemStyle: { color: '#909399' } }
     ]
   }]
 }))
@@ -356,10 +278,10 @@ const trendChartOption = computed(() => ({
   },
   yAxis: { type: 'value' },
   series: [
-    { name: '严重', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#8B0000' }, smooth: true, data: [1, 0, 2, 0, 1, 0, 0] },
-    { name: '高', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#f56c6c' }, smooth: true, data: [3, 2, 4, 3, 5, 2, 1] },
-    { name: '中', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#e6a23c' }, smooth: true, data: [8, 6, 7, 9, 5, 4, 3] },
-    { name: '低', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#909399' }, smooth: true, data: [12, 10, 15, 11, 9, 8, 6] }
+    { name: '严重', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#8B0000' }, smooth: true, data: [0, 0, 0, 0, 0, 0, 0] },
+    { name: '高', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#f56c6c' }, smooth: true, data: [0, 0, 0, 0, 0, 0, 0] },
+    { name: '中', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#e6a23c' }, smooth: true, data: [0, 0, 0, 0, 0, 0, 0] },
+    { name: '低', type: 'line', stack: 'total', areaStyle: { opacity: 0.4 }, itemStyle: { color: '#909399' }, smooth: true, data: [0, 0, 0, 0, 0, 0, 0] }
   ]
 }))
 
@@ -372,60 +294,140 @@ function typeTag(t) {
   return { traffic: '', device: 'success', intrusion: 'danger', rule: 'warning', system: 'info', vulnerability: 'danger' }[t] || 'info'
 }
 
+async function loadAlerts() {
+  loading.value = true
+  try {
+    const params = {
+      page: page.value,
+      pageSize: pageSize.value
+    }
+    if (filterLevel.value) {
+      params.level = filterLevel.value
+    }
+    if (filterRead.value) {
+      params.read = filterRead.value === 'read' || filterRead.value === 'resolved' 
+        ? true 
+        : (filterRead.value === 'unread' ? false : undefined)
+    }
+    if (searchText.value) {
+      params.keyword = searchText.value
+    }
+    const res = await alertsApi.getList(params)
+    if (res.success) {
+      alerts.value = res.data.list || []
+      total.value = res.data.total || 0
+      stats.total = res.data.total || 0
+      stats.unread = res.data.unread_count || 0
+    }
+  } catch (err) {
+    console.error('加载告警列表失败:', err)
+  } finally {
+    loading.value = false
+  }
+}
+
+function handleFilterChange() {
+  page.value = 1
+  loadAlerts()
+}
+
+function handleSearch() {
+  page.value = 1
+  loadAlerts()
+}
+
+function handlePageChange() {
+  loadAlerts()
+}
+
+function handleSizeChange() {
+  page.value = 1
+  loadAlerts()
+}
+
 function viewDetail(row) {
   current.value = row
   showDetail.value = true
   if (!row.read) {
-    setTimeout(() => { row.read = true; updateStats() }, 300)
+    markRead(row)
   }
 }
 
-function markRead(row) {
-  row.read = true
-  updateStats()
-  ElMessage.success('已标为已读')
+async function markRead(row) {
+  try {
+    const res = await alertsApi.markRead(row.id)
+    if (res.success) {
+      row.read = true
+      stats.unread = Math.max(0, stats.unread - 1)
+      ElMessage.success('已标为已读')
+    }
+  } catch (err) {
+    console.error('标记已读失败:', err)
+  }
 }
 
-function markAllRead() {
-  alerts.value.forEach(a => a.read = true)
-  updateStats()
-  ElMessage.success('全部已标为已读')
+async function markAllRead() {
+  try {
+    const res = await alertsApi.markAllRead()
+    if (res.success) {
+      alerts.value.forEach(a => a.read = true)
+      stats.unread = 0
+      ElMessage.success('全部已标为已读')
+    }
+  } catch (err) {
+    console.error('全部标记已读失败:', err)
+  }
 }
 
 function resolve(row) {
   row.read = true
   row.resolved = true
-  updateStats()
+  stats.resolved += 1
+  if (stats.unread > 0) {
+    stats.unread -= 1
+  }
   ElMessage.success('已标记为已处理')
 }
 
 async function removeOne(row) {
   try {
     await ElMessageBox.confirm('确定删除此告警吗？', '提示', { type: 'warning' })
-    alerts.value = alerts.value.filter(a => a.id !== row.id)
-    updateStats()
-    ElMessage.success('已删除')
+    const res = await alertsApi.delete(row.id)
+    if (res.success) {
+      alerts.value = alerts.value.filter(a => a.id !== row.id)
+      total.value = Math.max(0, total.value - 1)
+      stats.total = Math.max(0, stats.total - 1)
+      if (!row.read) {
+        stats.unread = Math.max(0, stats.unread - 1)
+      }
+      if (row.resolved) {
+        stats.resolved = Math.max(0, stats.resolved - 1)
+      }
+      ElMessage.success('已删除')
+    }
   } catch {}
 }
 
 async function clearAll() {
   try {
     await ElMessageBox.confirm('确定清空所有告警吗？此操作不可恢复！', '警告', { type: 'error' })
-    alerts.value = []
-    updateStats()
-    ElMessage.success('已清空')
+    const res = await alertsApi.deleteAll()
+    if (res.success) {
+      alerts.value = []
+      total.value = 0
+      stats.total = 0
+      stats.unread = 0
+      stats.resolved = 0
+      ElMessage.success('已清空')
+    }
   } catch {}
 }
 
 function onSelectionChange(sel) { selection.value = sel }
 
-function updateStats() {
-  stats.total = alerts.value.length
-  stats.unread = alerts.value.filter(a => !a.read).length
-  stats.resolved = alerts.value.filter(a => a.resolved).length
-}
-
-onMounted(() => { updateStats() })
+onMounted(() => {
+  loadAlerts()
+})
 </script>
 
 <style scoped>

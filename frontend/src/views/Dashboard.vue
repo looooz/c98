@@ -28,7 +28,7 @@
           <div class="stat-content">
             <div class="stat-icon traffic">📊</div>
             <div class="stat-info">
-              <div class="stat-label">今日流量 <el-tag size="small" type="info">示例</el-tag></div>
+              <div class="stat-label">今日流量</div>
               <div class="stat-value">{{ stats.todayTraffic }}</div>
             </div>
           </div>
@@ -39,7 +39,7 @@
           <div class="stat-content">
             <div class="stat-icon alert">🔔</div>
             <div class="stat-info">
-              <div class="stat-label">待处理告警 <el-tag size="small" type="info">示例</el-tag></div>
+              <div class="stat-label">待处理告警</div>
               <div class="stat-value">{{ stats.alerts }}</div>
             </div>
           </div>
@@ -133,7 +133,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   formatBytes,
   getDeviceIcon,
@@ -141,7 +141,7 @@ import {
   getDeviceTypeColor,
   relativeTime
 } from '@/utils/format'
-import { devices as deviceApi } from '@/api'
+import { devices as deviceApi, traffic as trafficApi, alerts as alertApi } from '@/api'
 
 const stats = ref({
   online: 0,
@@ -151,10 +151,12 @@ const stats = ref({
 })
 
 const allDevices = ref([])
+const trafficTrend = ref({ labels: [], upload: [], download: [] })
+const recentAlerts = ref([])
 const loading = ref(false)
+let refreshTimer = null
 
 async function loadDeviceStats() {
-  loading.value = true
   try {
     const res = await deviceApi.getList({ pageSize: 100 })
     if (res.success && res.data) {
@@ -164,12 +166,51 @@ async function loadDeviceStats() {
     }
   } catch (e) {
     console.error('加载设备统计失败:', e)
-  } finally {
-    loading.value = false
   }
 }
 
-const hours = Array.from({ length: 24 }, (_, i) => `${i}:00`)
+async function loadTrafficStats() {
+  try {
+    const res = await trafficApi.getStats({ period: 'today' })
+    if (res.success && res.data) {
+      stats.value.todayTraffic = formatBytes(res.data.total || 0)
+    }
+  } catch (e) {
+    console.error('加载流量统计失败:', e)
+  }
+}
+
+async function loadTrafficTrend() {
+  try {
+    const res = await trafficApi.getTrend({ period: 'today' })
+    if (res.success && res.data) {
+      trafficTrend.value = res.data
+    }
+  } catch (e) {
+    console.error('加载流量趋势失败:', e)
+  }
+}
+
+async function loadAlerts() {
+  try {
+    const [listRes, countRes] = await Promise.all([
+      alertApi.getList({ pageSize: 5 }),
+      alertApi.getUnreadCount()
+    ])
+    if (listRes.success && listRes.data) {
+      recentAlerts.value = (listRes.data.list || []).map(a => ({
+        level: a.level,
+        message: a.message,
+        time: new Date(a.timestamp).getTime()
+      }))
+    }
+    if (countRes.success && countRes.data !== undefined) {
+      stats.value.alerts = countRes.data.unread_count || countRes.data || 0
+    }
+  } catch (e) {
+    console.error('加载告警失败:', e)
+  }
+}
 
 const trafficChartOption = computed(() => ({
   tooltip: {
@@ -184,7 +225,7 @@ const trafficChartOption = computed(() => ({
   },
   legend: { data: ['上传', '下载'] },
   grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-  xAxis: { type: 'category', boundaryGap: false, data: hours },
+  xAxis: { type: 'category', boundaryGap: false, data: trafficTrend.value.labels || [] },
   yAxis: {
     type: 'value',
     axisLabel: {
@@ -197,14 +238,14 @@ const trafficChartOption = computed(() => ({
       type: 'line',
       smooth: true,
       areaStyle: { opacity: 0.3 },
-      data: Array.from({ length: 24 }, () => Math.random() * 50 * 1024 * 1024)
+      data: trafficTrend.value.upload.length ? trafficTrend.value.upload : []
     },
     {
       name: '下载',
       type: 'line',
       smooth: true,
       areaStyle: { opacity: 0.3 },
-      data: Array.from({ length: 24 }, () => Math.random() * 200 * 1024 * 1024)
+      data: trafficTrend.value.download.length ? trafficTrend.value.download : []
     }
   ]
 }))
@@ -250,19 +291,48 @@ const recentDevices = computed(() => {
     }))
 })
 
-const recentAlerts = ref([
-  { level: 'high', message: '检测到异常流量：设备流量激增（示例数据）', time: Date.now() - 1000 * 60 * 5 },
-  { level: 'medium', message: '新设备接入网络（示例数据）', time: Date.now() - 1000 * 60 * 30 },
-  { level: 'low', message: '家长控制规则已生效（示例数据）', time: Date.now() - 1000 * 60 * 60 * 2 }
-])
-
 const alertLevelTag = (level) => {
   const map = { critical: 'danger', high: 'warning', medium: '', low: 'info' }
   return map[level] || 'info'
 }
 
+async function loadAllData() {
+  loading.value = true
+  try {
+    await Promise.all([
+      loadDeviceStats(),
+      loadTrafficStats(),
+      loadTrafficTrend(),
+      loadAlerts()
+    ])
+  } finally {
+    loading.value = false
+  }
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  refreshTimer = setInterval(() => {
+    loadTrafficStats()
+    loadTrafficTrend()
+    loadAlerts()
+  }, 30000)
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
 onMounted(() => {
-  loadDeviceStats()
+  loadAllData()
+  startAutoRefresh()
+})
+
+onUnmounted(() => {
+  stopAutoRefresh()
 })
 </script>
 

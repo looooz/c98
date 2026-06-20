@@ -15,7 +15,7 @@
           <el-checkbox v-model="showStats">显示状态</el-checkbox>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :icon="Refresh" @click="refresh">刷新</el-button>
+          <el-button type="primary" :icon="Refresh" @click="refresh" :loading="loading">刷新</el-button>
           <el-button :icon="ZoomIn" @click="zoomIn">放大</el-button>
           <el-button :icon="ZoomOut" @click="zoomOut">缩小</el-button>
           <el-button :icon="FullScreen" @click="toggleFullscreen">全屏</el-button>
@@ -41,7 +41,6 @@
               <div class="legend">
                 <span class="legend-item"><span class="dot online"></span>在线</span>
                 <span class="legend-item"><span class="dot offline"></span>离线</span>
-                <span class="legend-item"><span class="dot blocked"></span>封禁</span>
                 <span class="legend-item"><span class="line high"></span>高流量</span>
                 <span class="legend-item"><span class="line normal"></span>正常</span>
               </div>
@@ -73,13 +72,6 @@
             </div>
             <div class="stat-item">
               <div class="stat-icon orange">📊</div>
-              <div class="stat-info">
-                <div class="stat-label">总流量</div>
-                <div class="stat-value">{{ formatBytes(overview.totalTraffic) }}</div>
-              </div>
-            </div>
-            <div class="stat-item">
-              <div class="stat-icon purple">📈</div>
               <div class="stat-info">
                 <div class="stat-label">在线率</div>
                 <div class="stat-value">{{ overview.onlineRate }}%</div>
@@ -124,10 +116,8 @@
               <el-descriptions-item label="IP 地址">{{ selectedNode.ip }}</el-descriptions-item>
               <el-descriptions-item label="MAC 地址">{{ formatMac(selectedNode.mac) }}</el-descriptions-item>
               <el-descriptions-item label="厂商">{{ selectedNode.vendor }}</el-descriptions-item>
-              <el-descriptions-item label="上行流量">{{ formatBytes(selectedNode.up) }}</el-descriptions-item>
-              <el-descriptions-item label="下行流量">{{ formatBytes(selectedNode.down) }}</el-descriptions-item>
-              <el-descriptions-item label="连接数">{{ selectedNode.connections }}</el-descriptions-item>
-              <el-descriptions-item label="在线时长">{{ formatDuration(selectedNode.duration) }}</el-descriptions-item>
+              <el-descriptions-item label="首次发现">{{ formatDateTime(selectedNode.first_seen) }}</el-descriptions-item>
+              <el-descriptions-item label="最后在线">{{ formatDateTime(selectedNode.last_seen) }}</el-descriptions-item>
             </el-descriptions>
           </div>
           <div v-else class="no-select">
@@ -159,7 +149,8 @@ import {
   FullScreen,
   Picture
 } from '@element-plus/icons-vue'
-import { formatBytes, formatDuration, formatMac, getDeviceTypeLabel, getDeviceTypeColor, getDeviceIcon, getVendorLogo } from '@/utils/format.js'
+import { formatBytes, formatDuration, formatMac, formatDateTime, getDeviceTypeLabel, getDeviceTypeColor, getDeviceIcon, getVendorLogo } from '@/utils/format.js'
+import { devices } from '@/api'
 
 use([
   CanvasRenderer,
@@ -178,106 +169,185 @@ const showStats = ref(true)
 const chartRef = ref(null)
 const topoWrapRef = ref(null)
 const selectedNode = ref(null)
+const loading = ref(false)
+const deviceList = ref([])
 
 const statusMap = { online: '在线', offline: '离线', blocked: '封禁' }
 const tagTypeMap = { online: 'success', offline: 'info', blocked: 'danger' }
 
-const overview = ref({
-  nodes: 24,
-  edges: 31,
-  totalTraffic: 18745328742,
-  onlineRate: 92
+const gatewayDevice = computed(() => {
+  const routers = deviceList.value.filter(d => d.device_type === 'router')
+  if (routers.length > 0) {
+    return routers.sort((a, b) => {
+      const aOnline = a.is_online ? 1 : 0
+      const bOnline = b.is_online ? 1 : 0
+      if (aOnline !== bOnline) return bOnline - aOnline
+      return (a.ip || '').localeCompare(b.ip || '')
+    })[0]
+  }
+  return deviceList.value[0] || null
 })
 
-const typeStats = ref([
-  { type: 'router', label: '路由器', icon: '🛰️', color: '#409eff', count: 3, percent: 13 },
-  { type: 'computer', label: '电脑', icon: '💻', color: '#67c23a', count: 6, percent: 25 },
-  { type: 'phone', label: '手机', icon: '📱', color: '#e6a23c', count: 8, percent: 33 },
-  { type: 'tv', label: '电视', icon: '📺', color: '#909399', count: 2, percent: 8 },
-  { type: 'smart_home', label: '智能家居', icon: '🏠', color: '#9b59b6', count: 3, percent: 13 },
-  { type: 'unknown', label: '未知', icon: '❓', color: '#95a5a6', count: 2, percent: 8 }
-])
+const rawNodes = computed(() => {
+  return deviceList.value.map(d => {
+    const isGateway = gatewayDevice.value && d.id === gatewayDevice.value.id
+    const isRouter = d.device_type === 'router'
+    let category = '终端'
+    if (isGateway) category = '核心'
+    else if (isRouter) category = '接入'
 
-const rawNodes = [
-  { id: 'gw', name: '主网关路由器', category: '核心', type: 'router', status: 'online', ip: '192.168.1.1', mac: '00:11:22:33:44:55', vendor: 'TP-Link', up: 28374652, down: 827364521, connections: 28, duration: 86400 * 7 },
-  { id: 'sw1', name: '主交换机', category: '核心', type: 'router', status: 'online', ip: '192.168.1.2', mac: '00:11:22:33:44:66', vendor: '华为', up: 18273645, down: 716253421, connections: 22, duration: 86400 * 5 },
-  { id: 'ap1', name: '无线AP-1F', category: '接入', type: 'router', status: 'online', ip: '192.168.1.10', mac: 'aa:bb:cc:dd:ee:01', vendor: 'TP-Link', up: 8273645, down: 382736452, connections: 12, duration: 86400 * 3 },
-  { id: 'ap2', name: '无线AP-2F', category: '接入', type: 'router', status: 'online', ip: '192.168.1.11', mac: 'aa:bb:cc:dd:ee:02', vendor: 'TP-Link', up: 6172634, down: 283746512, connections: 9, duration: 86400 * 3 },
-  { id: 'ap3', name: '无线AP-3F', category: '接入', type: 'router', status: 'offline', ip: '192.168.1.12', mac: 'aa:bb:cc:dd:ee:03', vendor: 'Cisco', up: 0, down: 0, connections: 0, duration: 0 },
+    return {
+      id: String(d.id),
+      name: d.custom_name || d.hostname || d.ip || '未知设备',
+      category,
+      type: d.device_type || 'unknown',
+      status: d.is_online ? 'online' : 'offline',
+      ip: d.ip || '-',
+      mac: d.mac || '',
+      vendor: d.vendor || '未知',
+      first_seen: d.first_seen,
+      last_seen: d.last_seen,
+      up: 0,
+      down: 0,
+      connections: 0,
+      duration: 0
+    }
+  })
+})
 
-  { id: 'pc1', name: '办公电脑-01', category: '终端', type: 'computer', status: 'online', ip: '192.168.1.100', mac: 'aa:11:bb:22:cc:01', vendor: 'Dell', up: 4728374, down: 127364521, connections: 18, duration: 86400 * 2 },
-  { id: 'pc2', name: '办公电脑-02', category: '终端', type: 'computer', status: 'online', ip: '192.168.1.101', mac: 'aa:11:bb:22:cc:02', vendor: 'Lenovo', up: 3827364, down: 98273645, connections: 15, duration: 86400 },
-  { id: 'pc3', name: '服务器-Web', category: '终端', type: 'computer', status: 'online', ip: '192.168.1.200', mac: 'aa:11:bb:22:cc:03', vendor: 'HP', up: 82736451, down: 28374651, connections: 124, duration: 86400 * 15 },
-  { id: 'pc4', name: '服务器-DB', category: '终端', type: 'computer', status: 'online', ip: '192.168.1.201', mac: 'aa:11:bb:22:cc:04', vendor: 'Dell', up: 47283746, down: 182736452, connections: 56, duration: 86400 * 12 },
-  { id: 'pc5', name: '办公电脑-03', category: '终端', type: 'computer', status: 'offline', ip: '192.168.1.102', mac: 'aa:11:bb:22:cc:05', vendor: 'Apple', up: 0, down: 0, connections: 0, duration: 0 },
-  { id: 'pc6', name: '办公电脑-04', category: '终端', type: 'computer', status: 'online', ip: '192.168.1.103', mac: 'aa:11:bb:22:cc:06', vendor: 'Asus', up: 2837465, down: 72635142, connections: 11, duration: 3600 * 8 },
+const rawEdges = computed(() => {
+  const edges = []
+  const gw = gatewayDevice.value
+  if (!gw) return edges
 
-  { id: 'ph1', name: '张三的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.110', mac: 'bb:22:cc:33:dd:01', vendor: 'Apple', up: 1827364, down: 47283746, connections: 22, duration: 3600 * 6 },
-  { id: 'ph2', name: '李四的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.111', mac: 'bb:22:cc:33:dd:02', vendor: 'Huawei', up: 1273645, down: 38273645, connections: 18, duration: 3600 * 4 },
-  { id: 'ph3', name: '王五的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.112', mac: 'bb:22:cc:33:dd:03', vendor: 'Xiaomi', up: 927364, down: 28374652, connections: 14, duration: 3600 * 5 },
-  { id: 'ph4', name: '赵六的手机', category: '终端', type: 'phone', status: 'blocked', ip: '192.168.1.113', mac: 'bb:22:cc:33:dd:04', vendor: 'OPPO', up: 0, down: 0, connections: 0, duration: 0 },
-  { id: 'ph5', name: '孙七的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.114', mac: 'bb:22:cc:33:dd:05', vendor: 'Vivo', up: 726351, down: 22837465, connections: 12, duration: 3600 * 3 },
-  { id: 'ph6', name: '周八的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.115', mac: 'bb:22:cc:33:dd:06', vendor: 'Samsung', up: 618273, down: 19283746, connections: 16, duration: 3600 * 2 },
-  { id: 'ph7', name: '吴九的手机', category: '终端', type: 'phone', status: 'online', ip: '192.168.1.116', mac: 'bb:22:cc:33:dd:07', vendor: 'OnePlus', up: 482736, down: 15273645, connections: 9, duration: 3600 },
-  { id: 'ph8', name: '郑十的手机', category: '终端', type: 'phone', status: 'offline', ip: '192.168.1.117', mac: 'bb:22:cc:33:dd:08', vendor: 'Apple', up: 0, down: 0, connections: 0, duration: 0 },
+  const gwId = String(gw.id)
+  const otherNodes = deviceList.value.filter(d => d.id !== gw.id)
 
-  { id: 'tv1', name: '客厅智能电视', category: '终端', type: 'tv', status: 'online', ip: '192.168.1.150', mac: 'cc:33:dd:44:ee:01', vendor: 'Xiaomi', up: 1827364, down: 827364521, connections: 7, duration: 3600 * 4 },
-  { id: 'tv2', name: '会议室投影', category: '终端', type: 'tv', status: 'offline', ip: '192.168.1.151', mac: 'cc:33:dd:44:ee:02', vendor: 'Sony', up: 0, down: 0, connections: 0, duration: 0 },
+  const routers = otherNodes.filter(d => d.device_type === 'router')
+  const terminals = otherNodes.filter(d => d.device_type !== 'router')
 
-  { id: 'sh1', name: '客厅空调', category: '终端', type: 'smart_home', status: 'online', ip: '192.168.1.160', mac: 'dd:44:ee:55:ff:01', vendor: 'Midea', up: 28374, down: 172635, connections: 3, duration: 86400 * 4 },
-  { id: 'sh2', name: '智能灯-走廊', category: '终端', type: 'smart_home', status: 'online', ip: '192.168.1.161', mac: 'dd:44:ee:55:ff:02', vendor: 'Yeelight', up: 12736, down: 82736, connections: 2, duration: 86400 * 3 },
-  { id: 'sh3', name: '智能门锁', category: '终端', type: 'smart_home', status: 'online', ip: '192.168.1.162', mac: 'dd:44:ee:55:ff:03', vendor: 'Dormakaba', up: 7364, down: 38273, connections: 1, duration: 86400 * 6 }
-]
+  if (routers.length > 0) {
+    routers.forEach(r => {
+      edges.push({
+        source: gwId,
+        target: String(r.id),
+        traffic: 0,
+        high: false
+      })
+    })
 
-const rawEdges = [
-  { source: 'gw', target: 'sw1', traffic: 927364521, high: true },
-  { source: 'sw1', target: 'ap1', traffic: 382736452, high: false },
-  { source: 'sw1', target: 'ap2', traffic: 283746512, high: false },
-  { source: 'sw1', target: 'ap3', traffic: 0, high: false },
-  { source: 'sw1', target: 'pc1', traffic: 127364521, high: false },
-  { source: 'sw1', target: 'pc2', traffic: 98273645, high: false },
-  { source: 'sw1', target: 'pc3', traffic: 82736451, high: false },
-  { source: 'sw1', target: 'pc4', traffic: 182736452, high: true },
-  { source: 'sw1', target: 'pc5', traffic: 0, high: false },
-  { source: 'sw1', target: 'pc6', traffic: 72635142, high: false },
-  { source: 'ap1', target: 'ph1', traffic: 47283746, high: false },
-  { source: 'ap1', target: 'ph2', traffic: 38273645, high: false },
-  { source: 'ap1', target: 'ph3', traffic: 28374652, high: false },
-  { source: 'ap1', target: 'ph4', traffic: 0, high: false },
-  { source: 'ap1', target: 'ph5', traffic: 22837465, high: false },
-  { source: 'ap1', target: 'ph8', traffic: 0, high: false },
-  { source: 'ap1', target: 'sh1', traffic: 172635, high: false },
-  { source: 'ap1', target: 'sh3', traffic: 38273, high: false },
-  { source: 'ap2', target: 'ph6', traffic: 19283746, high: false },
-  { source: 'ap2', target: 'ph7', traffic: 15273645, high: false },
-  { source: 'ap2', target: 'tv1', traffic: 827364521, high: true },
-  { source: 'ap2', target: 'tv2', traffic: 0, high: false },
-  { source: 'ap2', target: 'sh2', traffic: 82736, high: false },
-  { source: 'ap3', target: 'pc5', traffic: 0, high: false },
-  { source: 'gw', target: 'pc3', traffic: 82736451, high: false },
-  { source: 'gw', target: 'pc4', traffic: 182736452, high: true }
-]
+    terminals.forEach((t, idx) => {
+      const routerIdx = idx % routers.length
+      edges.push({
+        source: String(routers[routerIdx].id),
+        target: String(t.id),
+        traffic: 0,
+        high: false
+      })
+    })
+  } else {
+    terminals.forEach(t => {
+      edges.push({
+        source: gwId,
+        target: String(t.id),
+        traffic: 0,
+        high: false
+      })
+    })
+  }
+
+  return edges
+})
+
+const overview = computed(() => {
+  const nodes = deviceList.value.length
+  const edges = rawEdges.value.length
+  const onlineCount = deviceList.value.filter(d => d.is_online).length
+  const onlineRate = nodes > 0 ? Math.round((onlineCount / nodes) * 100) : 0
+
+  return {
+    nodes,
+    edges,
+    onlineRate
+  }
+})
+
+const typeStats = computed(() => {
+  const typeCount = {}
+  const total = deviceList.value.length
+
+  deviceList.value.forEach(d => {
+    const type = d.device_type || 'unknown'
+    typeCount[type] = (typeCount[type] || 0) + 1
+  })
+
+  const stats = []
+  for (const [type, count] of Object.entries(typeCount)) {
+    stats.push({
+      type,
+      label: getDeviceTypeLabel(type),
+      icon: getDeviceIcon(type),
+      color: getDeviceTypeColor(type),
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    })
+  }
+
+  return stats.sort((a, b) => b.count - a.count)
+})
 
 const nodeInfoMap = computed(() => {
   const map = {}
-  rawNodes.forEach(n => {
+  rawNodes.value.forEach(n => {
     const icon = getDeviceIcon(n.type) || '❓'
     map[n.id] = { ...n, icon, label: getDeviceTypeLabel(n.type), color: getDeviceTypeColor(n.type) }
   })
   return map
 })
 
-const treeHierarchy = [
-  { id: 'gw', children: [
-    { id: 'sw1', children: [
-      { id: 'ap1', children: ['ph1','ph2','ph3','ph4','ph5','ph8','sh1','sh3'].map(id => ({ id })) },
-      { id: 'ap2', children: ['ph6','ph7','tv1','tv2','sh2'].map(id => ({ id })) },
-      { id: 'ap3', children: [] },
-      { id: 'pc1', children: [] }, { id: 'pc2', children: [] }, { id: 'pc3', children: [] },
-      { id: 'pc4', children: [] }, { id: 'pc5', children: [] }, { id: 'pc6', children: [] }
-    ]}
-  ]}
-]
+const treeHierarchy = computed(() => {
+  const gw = gatewayDevice.value
+  if (!gw) return []
+
+  const gwId = String(gw.id)
+  const otherNodes = deviceList.value.filter(d => d.id !== gw.id)
+  const routers = otherNodes.filter(d => d.device_type === 'router')
+  const terminals = otherNodes.filter(d => d.device_type !== 'router')
+
+  function buildChildren(nodes) {
+    return nodes.map(n => ({ id: String(n.id), children: [] }))
+  }
+
+  if (routers.length > 0) {
+    const routerChildren = routers.map(r => {
+      const routerTerminals = terminals.filter((_, idx) => idx % routers.length === routers.indexOf(r))
+      return {
+        id: String(r.id),
+        children: buildChildren(routerTerminals)
+      }
+    })
+    return [{ id: gwId, children: routerChildren }]
+  } else {
+    return [{ id: gwId, children: buildChildren(terminals) }]
+  }
+})
+
+async function fetchDevices() {
+  loading.value = true
+  try {
+    const res = await devices.getList({ page_size: 100 })
+    if (res.success && res.data) {
+      deviceList.value = res.data.list || []
+    } else {
+      deviceList.value = []
+    }
+  } catch (err) {
+    console.error('Failed to fetch devices:', err)
+    deviceList.value = []
+  } finally {
+    loading.value = false
+  }
+}
 
 function buildTreeOption() {
   const colorMap = { online: '#67c23a', offline: '#909399', blocked: '#f56c6c' }
@@ -286,6 +356,7 @@ function buildTreeOption() {
   function walk(arr, depth) {
     return arr.map(node => {
       const info = nodeInfoMap.value[node.id]
+      if (!info) return null
       const size = depth === 0 ? 70 : depth === 1 ? 55 : depth === 2 ? 45 : 36
       return {
         name: info.name,
@@ -315,9 +386,9 @@ function buildTreeOption() {
             ip: { fontSize: 11, color: '#909399', padding: [2, 0, 0, 0] }
           }
         },
-        children: node.children ? walk(node.children, depth + 1) : []
+        children: node.children ? walk(node.children, depth + 1).filter(Boolean) : []
       }
-    })
+    }).filter(Boolean)
   }
 
   return {
@@ -325,7 +396,7 @@ function buildTreeOption() {
       trigger: 'item',
       formatter: (p) => {
         if (p.dataType === 'edge') {
-          const t = rawEdges.find(e =>
+          const t = rawEdges.value.find(e =>
             (e.source === p.data.source && e.target === p.data.target) ||
             (e.target === p.data.source && e.source === p.data.target)
           )
@@ -338,13 +409,12 @@ function buildTreeOption() {
         return info ? `<div style="font-weight:600;margin-bottom:4px">${info.icon} ${info.name}</div>
           <div>IP: ${info.ip}</div>
           <div>状态: ${statusMap[info.status]}</div>
-          <div>下行: ${formatBytes(info.down)}</div>
-          <div>上行: ${formatBytes(info.up)}</div>` : p.name
+          <div>厂商: ${info.vendor}</div>` : p.name
       }
     },
     series: [{
       type: 'tree',
-      data: walk(treeHierarchy, 0),
+      data: walk(treeHierarchy.value, 0),
       top: '6%', left: '12%', right: '8%', bottom: '6%',
       orient: 'LR',
       symbol: 'circle',
@@ -377,8 +447,8 @@ function buildForceOption() {
 
 function buildGraphOption(layoutType) {
   const colorMap = { online: '#67c23a', offline: '#909399', blocked: '#f56c6c' }
-  const trafficMax = Math.max(...rawEdges.map(e => e.traffic), 1)
-  const nodes = rawNodes.map(n => {
+  const trafficMax = Math.max(...rawEdges.value.map(e => e.traffic), 1)
+  const nodes = rawNodes.value.map(n => {
     const info = nodeInfoMap.value[n.id]
     const sizeByType = n.type === 'router' ? 62 : n.category === '终端' ? 40 : 52
     return {
@@ -408,11 +478,11 @@ function buildGraphOption(layoutType) {
       }
     }
   })
-  const edges = rawEdges.map(e => {
+  const edges = rawEdges.value.map(e => {
     const src = nodeInfoMap.value[e.source]
     const tgt = nodeInfoMap.value[e.target]
     const isHigh = e.high || (showTraffic.value && e.traffic / trafficMax > 0.3)
-    const disabled = src.status === 'offline' || tgt.status === 'offline' ||
+    const disabled = !src || !tgt || src.status === 'offline' || tgt.status === 'offline' ||
       src.status === 'blocked' || tgt.status === 'blocked'
     return {
       source: e.source, target: e.target, value: e.traffic,
@@ -433,7 +503,7 @@ function buildGraphOption(layoutType) {
       trigger: 'item',
       formatter: (p) => {
         if (p.dataType === 'edge') {
-          const t = rawEdges.find(e =>
+          const t = rawEdges.value.find(e =>
             (e.source === p.data.source && e.target === p.data.target) ||
             (e.target === p.data.source && e.source === p.data.target)
           )
@@ -448,8 +518,7 @@ function buildGraphOption(layoutType) {
           <div>MAC: ${formatMac(info.mac)}</div>
           <div>状态: ${statusMap[info.status]}</div>
           <div>类型: ${getDeviceTypeLabel(info.type)}</div>
-          <div>下行: ${formatBytes(info.down)}</div>
-          <div>上行: ${formatBytes(info.up)}</div>` : p.name
+          <div>厂商: ${info.vendor}</div>` : p.name
       }
     },
     series: [{
@@ -507,13 +576,17 @@ function exportImage(cmd) {
   a.click()
   ElMessage.success(`拓扑图已导出为 ${cmd.toUpperCase()}`)
 }
-function refresh() {
-  const inst = chartRef.value?.getEchartsInstance?.()
-  if (inst) { inst.resize() }
+async function refresh() {
+  await fetchDevices()
+  nextTick(() => {
+    const inst = chartRef.value?.getEchartsInstance?.()
+    if (inst) { inst.resize() }
+  })
   ElMessage.success('拓扑数据已刷新')
 }
 
 onMounted(() => {
+  fetchDevices()
   nextTick(() => {
     const inst = chartRef.value?.getEchartsInstance?.()
     if (inst) { inst.resize() }
@@ -530,7 +603,6 @@ onMounted(() => {
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .dot.online { background: #67c23a; }
 .dot.offline { background: #909399; }
-.dot.blocked { background: #f56c6c; }
 .line { width: 20px; height: 3px; border-radius: 2px; display: inline-block; vertical-align: middle; }
 .line.high { background: #f56c6c; }
 .line.normal { background: #80c0ff; }
@@ -588,7 +660,6 @@ onMounted(() => {
 }
 .node-avatar.online { background: #f0f9eb; box-shadow: 0 4px 12px rgba(103, 194, 58, 0.25); }
 .node-avatar.offline { background: #f4f4f5; box-shadow: 0 4px 12px rgba(144, 147, 153, 0.2); }
-.node-avatar.blocked { background: #fef0f0; box-shadow: 0 4px 12px rgba(245, 108, 108, 0.25); }
 .node-icon { font-size: 32px; }
 .status-dot {
   position: absolute; right: 2px; bottom: 2px;
@@ -597,7 +668,6 @@ onMounted(() => {
 }
 .node-avatar.online .status-dot { background: #67c23a; }
 .node-avatar.offline .status-dot { background: #909399; }
-.node-avatar.blocked .status-dot { background: #f56c6c; }
 .node-name { font-size: 15px; font-weight: 600; color: #303133; margin-bottom: 8px; }
 .node-tag { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; justify-content: center; }
 .node-desc { width: 100%; text-align: left; }

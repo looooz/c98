@@ -5,16 +5,16 @@
         <div class="card-header">
           <span>设备扫描</span>
           <div class="flex gap-2">
-            <el-tag :type="deviceStore.scanning ? 'warning' : 'success'" effect="light">
-              {{ deviceStore.scanning ? '扫描中...' : '空闲' }}
+            <el-tag :type="scanning ? 'warning' : 'success'" effect="light">
+              {{ scanning ? '扫描中...' : '空闲' }}
             </el-tag>
             <el-button
               type="primary"
               :icon="VideoPlay"
-              :loading="deviceStore.scanning"
+              :loading="scanning"
               @click="startScan"
             >
-              {{ deviceStore.scanning ? '扫描中' : '开始扫描' }}
+              {{ scanning ? '扫描中' : '开始扫描' }}
             </el-button>
           </div>
         </div>
@@ -39,7 +39,7 @@
           </el-form>
         </el-col>
         <el-col :span="16">
-          <div class="scan-progress" v-if="deviceStore.scanning">
+          <div class="scan-progress" v-if="scanning">
             <div class="radar-container">
               <div class="radar">
                 <div class="radar-sweep"></div>
@@ -147,10 +147,12 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
 import { VideoPlay, Search } from '@element-plus/icons-vue'
 import { useDeviceStore } from '@/stores/device'
+import { devices } from '@/api'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import ws from '@/utils/websocket'
 import {
   formatMac,
   getDeviceIcon,
@@ -160,6 +162,7 @@ import {
 
 const deviceStore = useDeviceStore()
 const loading = ref(false)
+const scanning = ref(false)
 const searchText = ref('')
 
 const scanForm = reactive({
@@ -176,21 +179,12 @@ const scanProgress = reactive({
 
 const deviceTypeList = getDeviceTypeList()
 
-const mockDevices = ref([
-  { id: 1, ip: '192.168.1.1', mac: '00:1A:2B:3C:4D:01', name: 'Router-Main', vendor: 'TP-Link', type: 'router', online: true },
-  { id: 2, ip: '192.168.1.101', mac: 'AA:BB:CC:DD:EE:01', name: 'iPhone-13', vendor: 'Apple', type: 'phone', online: true },
-  { id: 3, ip: '192.168.1.102', mac: '11:22:33:44:55:01', name: 'MacBook-Pro', vendor: 'Apple', type: 'computer', online: true },
-  { id: 4, ip: '192.168.1.103', mac: '22:33:44:55:66:01', name: 'Mi-TV-Box', vendor: 'Xiaomi', type: 'tv', online: true },
-  { id: 5, ip: '192.168.1.104', mac: '33:44:55:66:77:01', name: 'iPad-Air', vendor: 'Apple', type: 'tablet', online: false },
-  { id: 6, ip: '192.168.1.105', mac: '44:55:66:77:88:01', name: 'PS5', vendor: 'Sony', type: 'console', online: true },
-  { id: 7, ip: '192.168.1.110', mac: '55:66:77:88:99:01', name: 'Smart-Door-Lock', vendor: 'Xiaomi', type: 'smart_home', online: true },
-  { id: 8, ip: '192.168.1.115', mac: '66:77:88:99:AA:01', name: 'Unknown-Device', vendor: 'Unknown', type: 'unknown', online: true }
-])
+const deviceList = ref([])
 
 const filteredDevices = computed(() => {
-  if (!searchText.value) return mockDevices.value
+  if (!searchText.value) return deviceList.value
   const q = searchText.value.toLowerCase()
-  return mockDevices.value.filter(d =>
+  return deviceList.value.filter(d =>
     d.ip.includes(q) ||
     d.name.toLowerCase().includes(q) ||
     (d.vendor && d.vendor.toLowerCase().includes(q)) ||
@@ -200,18 +194,48 @@ const filteredDevices = computed(() => {
 
 const radarDots = ref([])
 
-function generateDots() {
-  radarDots.value = Array.from({ length: 8 }, (_, i) => {
-    const angle = (i / 8) * Math.PI * 2
-    const dist = 20 + Math.random() * 60
+function generateRadarDots(count) {
+  const emojis = ['📱', '💻', '📡', '📺', '🎮', '🏠', '📷', '❓']
+  const dots = []
+  for (let i = 0; i < Math.min(count, 12); i++) {
+    const angle = (i / 12) * Math.PI * 2
+    const dist = 20 + (i % 3) * 20
     const x = 50 + Math.cos(angle) * dist
     const y = 50 + Math.sin(angle) * dist
-    return {
+    dots.push({
       id: i,
       style: { left: `${x}%`, top: `${y}%` },
-      emoji: ['📱', '💻', '📡', '📺', '🎮', '🏠', '📷', '❓'][i]
-    }
-  })
+      emoji: emojis[i % emojis.length]
+    })
+  }
+  radarDots.value = dots
+}
+
+async function fetchDeviceList() {
+  loading.value = true
+  try {
+    const res = await devices.getList()
+    const list = res?.data?.list || res?.data || res?.list || []
+    deviceList.value = Array.isArray(list) ? list : []
+  } catch (e) {
+  console.error('获取设备列表失败:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+function handleScanProgress(data) {
+  scanProgress.scanned = data?.scanned ?? scanProgress.scanned
+  scanProgress.found = data?.found ?? scanProgress.found
+  scanProgress.percent = data?.percent ?? scanProgress.percent
+  generateRadarDots(scanProgress.found)
+}
+
+function handleScanComplete(data) {
+  scanning.value = false
+  scanProgress.percent = 100
+  ElMessage.success(`扫描完成，共发现 ${data?.found || deviceList.value.length} 台设备`)
+  fetchDeviceList()
 }
 
 async function startScan() {
@@ -223,30 +247,23 @@ async function startScan() {
     scanProgress.scanned = 0
     scanProgress.found = 0
     scanProgress.percent = 0
-    generateDots()
-    deviceStore.startScan()
+    generateRadarDots(0)
+    scanning.value = true
 
-    const total = 50
-    let foundCount = 0
-    for (let i = 1; i <= total; i++) {
-      await new Promise(r => setTimeout(r, 60))
-      scanProgress.scanned = i
-      if (Math.random() > 0.7) foundCount++
-      scanProgress.found = foundCount
-      scanProgress.percent = Math.floor((i / total) * 100)
-    }
-    ElMessage.success(`扫描完成，共发现 ${mockDevices.value.length} 台设备`)
+    await devices.scan()
   } catch (e) {
+    console.error('扫描失败:', e)
     ElMessage.error('扫描失败')
-  } finally {
-    setTimeout(() => {
-      deviceStore.scanning = false
-    }, 500)
+    scanning.value = false
   }
 }
 
 function onTypeChange(row) {
-  ElMessage.success(`设备类型已更新`)
+  devices.setType(row.id, row.type).then(() => {
+    ElMessage.success('设备类型已更新')
+  }).catch(() => {
+    ElMessage.error('更新失败')
+  })
 }
 
 function editDevice(row) {
@@ -257,8 +274,12 @@ function editDevice(row) {
     inputPattern: /.+/,
     inputErrorMessage: '名称不能为空'
   }).then(({ value }) => {
-    row.name = value
-    ElMessage.success('修改成功')
+    devices.setName(row.id, value).then(() => {
+      row.name = value
+      ElMessage.success('修改成功')
+    }).catch(() => {
+      ElMessage.error('修改失败')
+    })
   }).catch(() => {})
 }
 
@@ -267,8 +288,23 @@ function addToDevices(row) {
   ElMessage.success(`已添加设备：${row.name || row.ip}`)
 }
 
+let scanProgressHandler = null
+let scanCompleteHandler = null
+
 onMounted(() => {
-  generateDots()
+  fetchDeviceList()
+  ws.connect()
+  scanProgressHandler = ws.on('scan_progress', handleScanProgress)
+  scanCompleteHandler = ws.on('scan_complete', handleScanComplete)
+})
+
+onUnmounted(() => {
+  if (scanProgressHandler) {
+    ws.off('scan_progress', scanProgressHandler)
+  }
+  if (scanCompleteHandler) {
+    ws.off('scan_complete', scanCompleteHandler)
+  }
 })
 </script>
 

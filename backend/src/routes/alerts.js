@@ -82,6 +82,39 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/unread-count', async (req, res) => {
+  try {
+    const total = await getQuery('SELECT COUNT(*) as count FROM alerts WHERE read = 0');
+    const byLevel = await allQuery(
+      'SELECT level, COUNT(*) as count FROM alerts WHERE read = 0 GROUP BY level'
+    );
+    const byType = await allQuery(
+      'SELECT type, COUNT(*) as count FROM alerts WHERE read = 0 GROUP BY type'
+    );
+
+    res.json(buildResponse(true, {
+      total: total.count,
+      by_level: byLevel.reduce((m, r) => ({ ...m, [r.level]: r.count }), {}),
+      by_type: byType.reduce((m, r) => ({ ...m, [r.type]: r.count }), {})
+    }, '获取未读数量成功'));
+  } catch (err) {
+    res.status(500).json(buildResponse(false, null, '获取未读数量失败', err.message));
+  }
+});
+
+router.put('/read-all', async (req, res) => {
+  try {
+    const result = await runQuery('UPDATE alerts SET read = 1 WHERE read = 0');
+
+    broadcast('alerts:all_read', { count: result.changes || 0 });
+    res.json(buildResponse(true, {
+      marked_count: result.changes || 0
+    }, `已将 ${result.changes || 0} 条告警标记为已读`));
+  } catch (err) {
+    res.status(500).json(buildResponse(false, null, '批量标记已读失败', err.message));
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const row = await getQuery(
@@ -123,39 +156,6 @@ router.put('/:id/read', async (req, res) => {
     res.json(buildResponse(true, parseAlert(updated), '告警已标记为已读'));
   } catch (err) {
     res.status(500).json(buildResponse(false, null, '标记已读失败', err.message));
-  }
-});
-
-router.put('/read-all', async (req, res) => {
-  try {
-    const result = await runQuery('UPDATE alerts SET read = 1 WHERE read = 0');
-
-    broadcast('alerts:all_read', { count: result.changes || 0 });
-    res.json(buildResponse(true, {
-      marked_count: result.changes || 0
-    }, `已将 ${result.changes || 0} 条告警标记为已读`));
-  } catch (err) {
-    res.status(500).json(buildResponse(false, null, '批量标记已读失败', err.message));
-  }
-});
-
-router.get('/unread-count', async (req, res) => {
-  try {
-    const total = await getQuery('SELECT COUNT(*) as count FROM alerts WHERE read = 0');
-    const byLevel = await allQuery(
-      'SELECT level, COUNT(*) as count FROM alerts WHERE read = 0 GROUP BY level'
-    );
-    const byType = await allQuery(
-      'SELECT type, COUNT(*) as count FROM alerts WHERE read = 0 GROUP BY type'
-    );
-
-    res.json(buildResponse(true, {
-      total: total.count,
-      by_level: byLevel.reduce((m, r) => ({ ...m, [r.level]: r.count }), {}),
-      by_type: byType.reduce((m, r) => ({ ...m, [r.type]: r.count }), {})
-    }, '获取未读数量成功'));
-  } catch (err) {
-    res.status(500).json(buildResponse(false, null, '获取未读数量失败', err.message));
   }
 });
 

@@ -84,7 +84,7 @@
                   <div class="tip-text">测试网络下载/上传速度，大约需要 30 秒</div>
                 </el-form-item>
                 <el-form-item>
-                  <el-button type="primary" :icon="Play" :loading="running.speed" @click="runSpeed">开始测速</el-button>
+                  <el-button type="primary" :icon="VideoPlay" :loading="running.speed" @click="runSpeed">开始测速</el-button>
                 </el-form-item>
               </el-form>
             </el-tab-pane>
@@ -136,11 +136,11 @@
             </el-col>
           </el-row>
           <el-divider />
-          <el-descriptions :column="2" size="small" border>
-            <el-descriptions-item label="路由器">192.168.1.1</el-descriptions-item>
-            <el-descriptions-item label="网关">192.168.1.1</el-descriptions-item>
-            <el-descriptions-item label="DNS">223.5.5.5, 114.114.114.114</el-descriptions-item>
-            <el-descriptions-item label="ISP">中国移动</el-descriptions-item>
+          <el-descriptions :column="2" size="small" border v-loading="networkLoading">
+            <el-descriptions-item label="路由器">{{ networkStatus.router }}</el-descriptions-item>
+            <el-descriptions-item label="网关">{{ networkStatus.gateway }}</el-descriptions-item>
+            <el-descriptions-item label="DNS">{{ networkStatus.dns }}</el-descriptions-item>
+            <el-descriptions-item label="ISP">{{ networkStatus.isp }}</el-descriptions-item>
             <el-descriptions-item label="公网 IP">{{ networkStatus.publicIp }}</el-descriptions-item>
             <el-descriptions-item label="上行带宽">{{ networkStatus.upBandwidth }} Mbps</el-descriptions-item>
           </el-descriptions>
@@ -199,6 +199,7 @@ import {
   Refresh, Warning, Download, RefreshLeft, Delete
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { diagnostic } from '@/api'
 
 const activeTool = ref('ping')
 
@@ -214,14 +215,45 @@ const portResults = ref([])
 const speedResult = ref(null)
 
 const networkStatus = reactive({
-  online: true,
-  latency: 12,
-  loss: 0.3,
-  jitter: 2,
-  publicIp: '114.221.*.*',
-  upBandwidth: 100,
-  downBandwidth: 500
+  online: false,
+  latency: 0,
+  loss: 0,
+  jitter: 0,
+  publicIp: '-',
+  upBandwidth: 0,
+  downBandwidth: 0,
+  router: '-',
+  gateway: '-',
+  dns: '-',
+  isp: '-'
 })
+
+const networkLoading = ref(false)
+
+async function fetchNetworkStatus() {
+  networkLoading.value = true
+  try {
+    const res = await diagnostic.getNetworkStatus()
+    if (res.success && res.data) {
+      const data = res.data
+      networkStatus.online = data.online ?? true
+      networkStatus.latency = data.latency ?? 0
+      networkStatus.loss = data.loss ?? 0
+      networkStatus.jitter = data.jitter ?? 0
+      networkStatus.publicIp = data.publicIp || data.public_ip || '-'
+      networkStatus.upBandwidth = data.upBandwidth || data.up_bandwidth || 0
+      networkStatus.downBandwidth = data.downBandwidth || data.down_bandwidth || 0
+      networkStatus.router = data.router || '192.168.1.1'
+      networkStatus.gateway = data.gateway || '192.168.1.1'
+      networkStatus.dns = data.dns || '223.5.5.5, 114.114.114.114'
+      networkStatus.isp = data.isp || '未知'
+    }
+  } catch (e) {
+    console.error('获取网络状态失败:', e)
+  } finally {
+    networkLoading.value = false
+  }
+}
 
 function stopTask() {
   Object.keys(running).forEach(k => running[k] = false)
@@ -234,16 +266,30 @@ async function runPing() {
   running.any = running.ping = true
   progress.value = 0
   output.value = `PING ${pingForm.host} (${pingForm.host}): 56 data bytes\n`
-  for (let i = 1; i <= pingForm.count; i++) {
-    await new Promise(r => setTimeout(r, 600))
-    const t = 8 + Math.random() * 15
-    output.value += `64 bytes from ${pingForm.host}: icmp_seq=${i} ttl=64 time=${t.toFixed(1)} ms\n`
-    progress.value = Math.floor((i / pingForm.count) * 100)
+  try {
+    const res = await diagnostic.ping(pingForm.host)
+    progress.value = 100
+    if (res.success && res.data) {
+      const data = res.data
+      if (data.output) {
+        output.value = data.output
+      } else {
+        output.value += `\n--- ${pingForm.host} ping statistics ---\n`
+        output.value += `${data.packetsSent || pingForm.count} packets transmitted, ${data.packetsReceived || 0} received, ${data.packetLoss || 0}% packet loss\n`
+        if (data.minTime !== undefined) {
+          output.value += `rtt min/avg/max = ${data.minTime}/${data.avgTime}/${data.maxTime} ms\n`
+        }
+      }
+      ElMessage.success('Ping 完成')
+    } else {
+      output.value += `\n请求失败: ${res.message || '未知错误'}\n`
+      ElMessage.error(res.message || 'Ping 失败')
+    }
+  } catch (e) {
+    output.value += `\n请求异常: ${e.message || '网络错误'}\n`
+  } finally {
+    running.any = running.ping = false
   }
-  output.value += `\n--- ${pingForm.host} ping statistics ---\n`
-  output.value += `${pingForm.count} packets transmitted, ${pingForm.count} received, 0% packet loss\n`
-  running.any = running.ping = false
-  ElMessage.success('Ping 完成')
 }
 
 async function runTrace() {
@@ -251,15 +297,28 @@ async function runTrace() {
   running.any = running.trace = true
   progress.value = 0
   output.value = `traceroute to ${traceForm.host}, ${traceForm.maxHops} hops max\n`
-  const hops = 8 + Math.floor(Math.random() * 6)
-  for (let i = 1; i <= Math.min(hops, traceForm.maxHops); i++) {
-    await new Promise(r => setTimeout(r, 500))
-    const t = 5 + Math.random() * 50
-    output.value += `${i}  ${i === hops ? traceForm.host : `10.0.${i}.1`}  ${t.toFixed(1)} ms\n`
-    progress.value = Math.floor((i / hops) * 100)
+  try {
+    const res = await diagnostic.traceroute(traceForm.host)
+    progress.value = 100
+    if (res.success && res.data) {
+      const data = res.data
+      if (data.output) {
+        output.value = data.output
+      } else if (Array.isArray(data.hops)) {
+        data.hops.forEach((hop, idx) => {
+          output.value += `${idx + 1}  ${hop.ip || hop.host || '*'}  ${hop.time || hop.rtt || '*'} ms\n`
+        })
+      }
+      ElMessage.success('追踪完成')
+    } else {
+      output.value += `\n请求失败: ${res.message || '未知错误'}\n`
+      ElMessage.error(res.message || '追踪失败')
+    }
+  } catch (e) {
+    output.value += `\n请求异常: ${e.message || '网络错误'}\n`
+  } finally {
+    running.any = running.trace = false
   }
-  running.any = running.trace = false
-  ElMessage.success('追踪完成')
 }
 
 async function runDns() {
@@ -267,17 +326,43 @@ async function runDns() {
   running.any = running.dns = true
   progress.value = 0
   output.value = `; <<>> DiG <<>> ${dnsForm.domain}\n`
-  output.value += `;; Query time: ${Math.floor(5 + Math.random() * 50)} msec\n`
-  output.value += `;; SERVER: ${dnsForm.server || '223.5.5.5'}#53\n\n`
-  output.value += `;; ANSWER SECTION:\n`
-  const ips = [`${Math.floor(Math.random() * 223) + 1}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`]
-  if (Math.random() > 0.5) ips.push(`${Math.floor(Math.random() * 223) + 1}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`)
-  ips.forEach(ip => {
-    output.value += `${dnsForm.domain}.  300  IN  A  ${ip}\n`
-  })
-  progress.value = 100
-  running.any = running.dns = false
-  ElMessage.success('查询完成')
+  try {
+    const res = await diagnostic.dnsLookup(dnsForm.domain)
+    progress.value = 100
+    if (res.success && res.data) {
+      const data = res.data
+      if (data.output) {
+        output.value = data.output
+      } else {
+        output.value += `;; Query time: ${data.queryTime || data.query_time || 0} msec\n`
+        output.value += `;; SERVER: ${dnsForm.server || data.server || '223.5.5.5'}#53\n\n`
+        output.value += `;; ANSWER SECTION:\n`
+        const records = data.records || data.answers || []
+        if (records.length) {
+          records.forEach(rec => {
+            const name = rec.name || dnsForm.domain
+            const type = rec.type || 'A'
+            const value = rec.value || rec.ip || rec.address
+            output.value += `${name}.  300  IN  ${type}  ${value}\n`
+          })
+        } else if (data.ip) {
+          output.value += `${dnsForm.domain}.  300  IN  A  ${data.ip}\n`
+        } else if (Array.isArray(data.ips)) {
+          data.ips.forEach(ip => {
+            output.value += `${dnsForm.domain}.  300  IN  A  ${ip}\n`
+          })
+        }
+      }
+      ElMessage.success('查询完成')
+    } else {
+      output.value += `\n请求失败: ${res.message || '未知错误'}\n`
+      ElMessage.error(res.message || '查询失败')
+    }
+  } catch (e) {
+    output.value += `\n请求异常: ${e.message || '网络错误'}\n`
+  } finally {
+    running.any = running.dns = false
+  }
 }
 
 async function runPortScan() {
@@ -286,58 +371,89 @@ async function runPortScan() {
   progress.value = 0
   portResults.value = []
   output.value = `Starting port scan for ${portForm.host} (${portForm.ports})\n\n`
-  const total = 50
-  for (let i = 0; i < total; i++) {
-    await new Promise(r => setTimeout(r, 30))
-    progress.value = Math.floor((i / total) * 100)
+  try {
+    const res = await diagnostic.portScan(portForm.host, portForm.ports)
+    progress.value = 100
+    if (res.success && res.data) {
+      const data = res.data
+      if (Array.isArray(data.ports) || Array.isArray(data.results)) {
+        const list = data.ports || data.results
+        portResults.value = list.map(item => ({
+          port: item.port,
+          open: item.open !== undefined ? item.open : item.status === 'open',
+          service: item.service || item.name || ''
+        }))
+        output.value += `Scan complete. Open ports: ${portResults.value.filter(p => p.open).length}\n`
+        portResults.value.forEach(p => {
+          output.value += `  ${p.port}/tcp  ${p.open ? 'open' : 'closed'}  ${p.service}\n`
+        })
+      } else if (data.output) {
+        output.value = data.output
+      }
+      ElMessage.success('扫描完成')
+    } else {
+      output.value += `\n请求失败: ${res.message || '未知错误'}\n`
+      ElMessage.error(res.message || '扫描失败')
+    }
+  } catch (e) {
+    output.value += `\n请求异常: ${e.message || '网络错误'}\n`
+  } finally {
+    running.any = running.port = false
   }
-  const known = [
-    { port: 21, service: 'FTP' },
-    { port: 22, service: 'SSH' },
-    { port: 23, service: 'Telnet' },
-    { port: 25, service: 'SMTP' },
-    { port: 53, service: 'DNS' },
-    { port: 80, service: 'HTTP' },
-    { port: 110, service: 'POP3' },
-    { port: 443, service: 'HTTPS' },
-    { port: 3306, service: 'MySQL' },
-    { port: 3389, service: 'RDP' },
-    { port: 8080, service: 'HTTP-Proxy' }
-  ]
-  portResults.value = known.map((k, idx) => ({
-    ...k,
-    open: [22, 53, 80, 443, 8080].includes(k.port) || (idx % 4 === 0)
-  }))
-  output.value += `Scan complete. Open ports: ${portResults.value.filter(p => p.open).length}\n`
-  running.any = running.port = false
-  ElMessage.success('扫描完成')
 }
 
 async function runSpeed() {
   running.any = running.speed = true
   progress.value = 0
   output.value = 'Running speed test...\n'
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 800))
-    progress.value = Math.floor(((i + 1) / 30) * 100)
+  try {
+    const res = await diagnostic.speedTest()
+    progress.value = 100
+    if (res.success && res.data) {
+      const data = res.data
+      const download = data.download || data.downloadSpeed || data.down || 0
+      const upload = data.upload || data.uploadSpeed || data.up || 0
+      const ping = data.ping || data.latency || 0
+      speedResult.value = {
+        download: typeof download === 'number' ? download.toFixed(1) : download,
+        upload: typeof upload === 'number' ? upload.toFixed(1) : upload,
+        ping: typeof ping === 'number' ? ping.toFixed(0) : ping
+      }
+      if (data.output) {
+        output.value = data.output
+      } else {
+        output.value = `Speed test results:\n`
+        output.value += `Download: ${speedResult.value.download} Mbps\n`
+        output.value += `Upload: ${speedResult.value.upload} Mbps\n`
+        output.value += `Ping: ${speedResult.value.ping} ms\n`
+      }
+      ElMessage.success('测速完成')
+    } else {
+      output.value += `\n请求失败: ${res.message || '未知错误'}\n`
+      ElMessage.error(res.message || '测速失败')
+    }
+  } catch (e) {
+    output.value += `\n请求异常: ${e.message || '网络错误'}\n`
+  } finally {
+    running.any = running.speed = false
   }
-  speedResult.value = {
-    download: (300 + Math.random() * 200).toFixed(1),
-    upload: (30 + Math.random() * 40).toFixed(1),
-    ping: (5 + Math.random() * 20).toFixed(0)
-  }
-  output.value += `Download: ${speedResult.value.download} Mbps\n`
-  output.value += `Upload: ${speedResult.value.upload} Mbps\n`
-  output.value += `Ping: ${speedResult.value.ping} ms\n`
-  running.any = running.speed = false
-  ElMessage.success('测速完成')
 }
 
 async function restartService() {
   try {
     await ElMessageBox.confirm('确定重启相关服务吗？这可能会暂时中断网络', '提示', { type: 'warning' })
-    ElMessage.success('服务已重启')
-  } catch {}
+    const res = await diagnostic.restartService()
+    if (res.success) {
+      ElMessage.success('服务已重启')
+      fetchNetworkStatus()
+    } else {
+      ElMessage.error(res.message || '重启失败')
+    }
+  } catch (e) {
+    if (e !== 'cancel') {
+      console.error('重启服务失败:', e)
+    }
+  }
 }
 
 async function clearCache() {
@@ -363,7 +479,9 @@ function clearOutput() {
   speedResult.value = null
 }
 
-onMounted(() => {})
+onMounted(() => {
+  fetchNetworkStatus()
+})
 </script>
 
 <style scoped>

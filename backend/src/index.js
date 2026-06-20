@@ -162,19 +162,10 @@ function startAutoScan() {
   console.log(`[Scheduler] 完整扫描任务已启动，周期: 每2小时`);
 }
 
-async function performRealScanAndSave(useMockOnFail = true) {
+async function performRealScanAndSave() {
   try {
     console.log('[Init] 正在执行真实局域网扫描...');
-    let scanResult;
-    try {
-      scanResult = await scanLocalNetwork();
-    } catch (scanErr) {
-      console.warn('[Init] 真实扫描失败:', scanErr.message);
-      if (!useMockOnFail) {
-        throw scanErr;
-      }
-      throw scanErr;
-    }
+    const scanResult = await scanLocalNetwork();
 
     if (!scanResult || !scanResult.devices || scanResult.devices.length === 0) {
       console.warn('[Init] 扫描结果为空');
@@ -182,7 +173,6 @@ async function performRealScanAndSave(useMockOnFail = true) {
     }
 
     const nowIso = new Date().toISOString();
-    const isMock = !!scanResult.isMock;
     let count = 0;
 
     for (const dev of scanResult.devices) {
@@ -224,25 +214,23 @@ async function performRealScanAndSave(useMockOnFail = true) {
             [result.id, mac, 'online', nowIso, dev.ip || null]
           );
         }
-        if (!isMock) {
-          broadcastAlert({
-            type: 'NEW_DEVICE',
-            level: deviceType === 'unknown' ? 'warning' : 'info',
-            title: '发现新设备',
-            message: `新设备接入网络：${vendor}（${hostname || dev.ip}）`,
-            device_id: result.id,
-            mac,
-            data: { vendor, ip: dev.ip, device_type: deviceType, method: 'scan' },
-            read: 0,
-            timestamp: nowIso
-          });
-        }
+        broadcastAlert({
+          type: 'NEW_DEVICE',
+          level: deviceType === 'unknown' ? 'warning' : 'info',
+          title: '发现新设备',
+          message: `新设备接入网络：${vendor}（${hostname || dev.ip}）`,
+          device_id: result.id,
+          mac,
+          data: { vendor, ip: dev.ip, device_type: deviceType, method: 'scan' },
+          read: 0,
+          timestamp: nowIso
+        });
         count++;
       }
     }
 
     console.log(`[Init] 扫描完成，发现 ${scanResult.devices.length} 台设备，新增 ${count} 台`);
-    return { count, total: scanResult.devices.length, method: isMock ? 'mock-fallback' : 'real' };
+    return { count, total: scanResult.devices.length, method: 'real' };
   } catch (e) {
     console.error('[Init] 真实扫描初始化失败:', e.message);
     return { count: 0, method: 'failed', error: e.message };

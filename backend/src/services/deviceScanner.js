@@ -572,8 +572,14 @@ const scanLocalNetwork = async () => {
       duration: 0
     };
   } catch (err) {
-    console.error('[deviceScanner] 扫描失败,使用模拟数据:', err.message);
-    return mockScan();
+    console.error('[deviceScanner] 扫描失败:', err.message);
+    return {
+      networkInfo: getLocalNetworkInfo(),
+      devices: [],
+      scannedAt: Date.now(),
+      duration: 0,
+      error: err.message
+    };
   }
 };
 

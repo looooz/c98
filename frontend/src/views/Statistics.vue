@@ -20,7 +20,7 @@
           />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :icon="Refresh" @click="refresh">刷新</el-button>
+          <el-button type="primary" :icon="Refresh" :loading="loading" @click="refresh">刷新</el-button>
           <el-dropdown @command="onExport">
             <el-button :icon="Download">导出报表</el-button>
             <template #dropdown>
@@ -43,7 +43,9 @@
             <div>
               <div class="kpi-label">设备总数</div>
               <div class="kpi-value">{{ kpi.devices }}</div>
-              <div class="kpi-trend up">较上周期 +12%</div>
+              <div class="kpi-trend" :class="kpi.devicesTrend >= 0 ? 'up' : 'down'">
+                较上周期 {{ kpi.devicesTrend >= 0 ? '+' : '' }}{{ kpi.devicesTrend }}%
+              </div>
             </div>
           </div>
         </el-card>
@@ -55,7 +57,9 @@
             <div>
               <div class="kpi-label">总流量</div>
               <div class="kpi-value">{{ kpi.traffic }}</div>
-              <div class="kpi-trend up">较上周期 +24%</div>
+              <div class="kpi-trend" :class="kpi.trafficTrend >= 0 ? 'up' : 'down'">
+                较上周期 {{ kpi.trafficTrend >= 0 ? '+' : '' }}{{ kpi.trafficTrend }}%
+              </div>
             </div>
           </div>
         </el-card>
@@ -67,7 +71,9 @@
             <div>
               <div class="kpi-label">连接次数</div>
               <div class="kpi-value">{{ kpi.connections }}</div>
-              <div class="kpi-trend down">较上周期 -5%</div>
+              <div class="kpi-trend" :class="kpi.connectionsTrend >= 0 ? 'up' : 'down'">
+                较上周期 {{ kpi.connectionsTrend >= 0 ? '+' : '' }}{{ kpi.connectionsTrend }}%
+              </div>
             </div>
           </div>
         </el-card>
@@ -79,7 +85,9 @@
             <div>
               <div class="kpi-label">告警总数</div>
               <div class="kpi-value">{{ kpi.alerts }}</div>
-              <div class="kpi-trend down">较上周期 -28%</div>
+              <div class="kpi-trend" :class="kpi.alertsTrend >= 0 ? 'up' : 'down'">
+                较上周期 {{ kpi.alertsTrend >= 0 ? '+' : '' }}{{ kpi.alertsTrend }}%
+              </div>
             </div>
           </div>
         </el-card>
@@ -127,7 +135,7 @@
           </el-radio-group>
         </div>
       </template>
-      <el-table :data="topDevices" stripe>
+      <el-table :data="topDevices" stripe v-loading="loading">
         <el-table-column label="#" width="70" align="center">
           <template #default="{ $index }">
             <el-tag
@@ -181,23 +189,35 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { Refresh, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { formatBytes, formatDuration, getDeviceIcon, getDeviceTypeColor } from '@/utils/format'
+import { statistics, traffic } from '@/api'
 
 const period = ref('week')
 const dateRange = ref([])
 const rankType = ref('total')
+const loading = ref(false)
 
 const kpi = reactive({
-  devices: 28,
-  traffic: formatBytes(186.5 * 1024 * 1024 * 1024),
-  connections: 1248,
-  alerts: 56
+  devices: 0,
+  traffic: formatBytes(0),
+  connections: 0,
+  alerts: 0,
+  devicesTrend: 0,
+  trafficTrend: 0,
+  connectionsTrend: 0,
+  alertsTrend: 0
 })
 
-const days = period.value === 'today' ? 24 : period.value === 'week' ? 7 : period.value === 'month' ? 30 : 12
+const overviewData = ref(null)
+const devicesByTypeData = ref([])
+const onlineTrendData = ref([])
+const trafficTrendData = ref([])
+const alertLevelData = ref([])
+const topDevices = ref([])
+
 const dayLabels = computed(() => {
   if (period.value === 'today') {
     return Array.from({ length: 24 }, (_, i) => `${i}:00`)
@@ -211,6 +231,19 @@ const dayLabels = computed(() => {
   return ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月']
 })
 
+const days = computed(() => {
+  return period.value === 'today' ? 24 : period.value === 'week' ? 7 : period.value === 'month' ? 30 : 12
+})
+
+function buildParams() {
+  const params = { period: period.value }
+  if (dateRange.value && dateRange.value.length === 2) {
+    params.startDate = dateRange.value[0]
+    params.endDate = dateRange.value[1]
+  }
+  return params
+}
+
 const trafficDailyOption = computed(() => ({
   tooltip: {
     trigger: 'axis',
@@ -222,22 +255,20 @@ const trafficDailyOption = computed(() => ({
   },
   legend: { data: ['下载', '上传'] },
   grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-  xAxis: { type: 'category', data: dayLabels.value },
+  xAxis: { type: 'category', data: trafficTrendData.value.length > 0 ? trafficTrendData.value.map(d => d.label || d.time) : dayLabels.value },
   yAxis: { type: 'value', axisLabel: { formatter: v => formatBytes(v) } },
   series: [
     {
-      name: '下载', type: 'bar', stack: 'total', barWidth: days > 12 ? '60%' : '40%',
+      name: '下载', type: 'bar', stack: 'total', barWidth: days.value > 12 ? '60%' : '40%',
       itemStyle: { color: '#409EFF' },
       emphasis: { focus: 'series' },
-      data: Array.from({ length: days }, () => 2 + Math.random() * 18)
-        .map(v => v * 1024 * 1024 * 1024)
+      data: trafficTrendData.value.length > 0 ? trafficTrendData.value.map(d => d.download || 0) : []
     },
     {
-      name: '上传', type: 'bar', stack: 'total', barWidth: days > 12 ? '60%' : '40%',
+      name: '上传', type: 'bar', stack: 'total', barWidth: days.value > 12 ? '60%' : '40%',
       itemStyle: { color: '#67C23A' },
       emphasis: { focus: 'series' },
-      data: Array.from({ length: days }, () => 0.3 + Math.random() * 3)
-        .map(v => v * 1024 * 1024 * 1024)
+      data: trafficTrendData.value.length > 0 ? trafficTrendData.value.map(d => d.upload || 0) : []
     }
   ]
 }))
@@ -253,22 +284,18 @@ const deviceTypePieOption = computed(() => ({
     itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
     label: { show: false },
     emphasis: { label: { show: true, fontSize: 14, fontWeight: 600 } },
-    data: [
-      { value: 10, name: '手机', itemStyle: { color: '#409EFF' } },
-      { value: 4, name: '电脑', itemStyle: { color: '#67C23A' } },
-      { value: 2, name: '平板', itemStyle: { color: '#E6A23C' } },
-      { value: 3, name: '电视/盒子', itemStyle: { color: '#F56C6C' } },
-      { value: 5, name: '智能家居', itemStyle: { color: '#909399' } },
-      { value: 2, name: '摄像头', itemStyle: { color: '#16A085' } },
-      { value: 2, name: '其他', itemStyle: { color: '#BDC3C7' } }
-    ]
+    data: devicesByTypeData.value.map(item => ({
+      value: item.count,
+      name: item.name,
+      itemStyle: { color: getDeviceTypeColor(item.type) }
+    }))
   }]
 }))
 
 const activeDevicesOption = computed(() => ({
   tooltip: { trigger: 'axis' },
   grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-  xAxis: { type: 'category', data: Array.from({ length: 24 }, (_, i) => `${i}:00`) },
+  xAxis: { type: 'category', data: onlineTrendData.value.length > 0 ? onlineTrendData.value.map(d => d.label || d.time) : Array.from({ length: 24 }, (_, i) => `${i}:00`) },
   yAxis: { type: 'value' },
   series: [{
     type: 'line',
@@ -284,68 +311,142 @@ const activeDevicesOption = computed(() => ({
       }
     },
     lineStyle: { color: '#409EFF', width: 3 },
-    data: [2, 1, 1, 1, 1, 2, 4, 8, 12, 15, 14, 13, 14, 12, 10, 11, 13, 16, 18, 20, 18, 14, 9, 5]
+    data: onlineTrendData.value.length > 0 ? onlineTrendData.value.map(d => d.count || 0) : []
   }]
 }))
 
-const alertLevelOption = computed(() => ({
-  tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-  legend: { bottom: 0 },
-  grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
-  xAxis: {
-    type: 'category',
-    data: period.value === 'week' ? ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] : Array.from({ length: days }, (_, i) => `${i + 1}日`)
-  },
-  yAxis: { type: 'value' },
-  series: [
-    {
-      name: '严重', type: 'bar', stack: 'total',
-      itemStyle: { color: '#f56c6c' },
-      data: Array.from({ length: Math.min(days, 7) }, () => Math.floor(Math.random() * 3))
-    },
-    {
-      name: '高', type: 'bar', stack: 'total',
-      itemStyle: { color: '#e6a23c' },
-      data: Array.from({ length: Math.min(days, 7) }, () => Math.floor(Math.random() * 5))
-    },
-    {
-      name: '中', type: 'bar', stack: 'total',
-      itemStyle: { color: '#409eff' },
-      data: Array.from({ length: Math.min(days, 7) }, () => Math.floor(Math.random() * 8))
-    },
-    {
-      name: '低', type: 'bar', stack: 'total',
-      itemStyle: { color: '#909399' },
-      data: Array.from({ length: Math.min(days, 7) }, () => Math.floor(Math.random() * 10))
+const alertLevelOption = computed(() => {
+  const xData = period.value === 'week'
+    ? ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+    : alertLevelData.value.length > 0
+      ? alertLevelData.value[0]?.data?.map((_, i) => alertLevelData.value[0].labels?.[i] || `${i + 1}日`) || []
+      : []
+
+  const getSeriesData = (level) => {
+    const levelData = alertLevelData.value.find(d => d.level === level)
+    return levelData ? levelData.data : []
+  }
+
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { bottom: 0 },
+    grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+    xAxis: { type: 'category', data: xData },
+    yAxis: { type: 'value' },
+    series: [
+      {
+        name: '严重', type: 'bar', stack: 'total',
+        itemStyle: { color: '#f56c6c' },
+        data: getSeriesData('critical')
+      },
+      {
+        name: '高', type: 'bar', stack: 'total',
+        itemStyle: { color: '#e6a23c' },
+        data: getSeriesData('high')
+      },
+      {
+        name: '中', type: 'bar', stack: 'total',
+        itemStyle: { color: '#409eff' },
+        data: getSeriesData('medium')
+      },
+      {
+        name: '低', type: 'bar', stack: 'total',
+        itemStyle: { color: '#909399' },
+        data: getSeriesData('low')
+      }
+    ]
+  }
+})
+
+const maxTotal = computed(() => {
+  if (topDevices.value.length === 0) return 1
+  return Math.max(...topDevices.value.map(d => d.download + d.upload))
+})
+
+async function loadData() {
+  loading.value = true
+  try {
+    const params = buildParams()
+    const [overviewRes, devicesByTypeRes, onlineTrendRes, trafficStatsRes, trafficTopRes] = await Promise.all([
+      statistics.getOverview(params),
+      statistics.getDevicesByType(params),
+      statistics.getOnlineTrend(params),
+      traffic.getStats(params),
+      statistics.getTrafficTop({ ...params, type: rankType.value, limit: 10 })
+    ])
+
+    if (overviewRes?.success) {
+      const data = overviewRes.data
+      overviewData.value = data
+      kpi.devices = data.totalDevices || data.deviceCount || 0
+      kpi.traffic = formatBytes(data.totalTraffic || data.traffic || 0)
+      kpi.connections = data.totalConnections || data.connectionCount || 0
+      kpi.alerts = data.totalAlerts || data.alertCount || 0
+      kpi.devicesTrend = data.devicesTrend || 0
+      kpi.trafficTrend = data.trafficTrend || 0
+      kpi.connectionsTrend = data.connectionsTrend || 0
+      kpi.alertsTrend = data.alertsTrend || 0
+
+      if (data.alertLevels) {
+        const levels = Object.keys(data.alertLevels)
+        alertLevelData.value = levels.map(level => ({
+          level,
+          data: Array.isArray(data.alertLevels[level]) ? data.alertLevels[level] : [data.alertLevels[level]]
+        }))
+      }
     }
-  ]
-}))
 
-const deviceNames = ['小明的 iPhone', 'MacBook Pro', '小米电视', 'iPad Air', 'PS5', '妈妈的手机', '工作电脑', '摄像头-客厅', '智能门锁', '小爱音箱Pro']
-const deviceTypes = ['phone', 'computer', 'tv', 'tablet', 'console', 'phone', 'computer', 'camera', 'smart_home', 'smart_home']
+    if (devicesByTypeRes?.success) {
+      devicesByTypeData.value = devicesByTypeRes.data || []
+    }
 
-const topDevices = ref(
-  deviceNames.map((name, i) => ({
-    name,
-    type: deviceTypes[i],
-    ip: `192.168.1.${100 + i}`,
-    download: (Math.random() * 30 + 1) * 1024 * 1024 * 1024,
-    upload: (Math.random() * 5 + 0.1) * 1024 * 1024 * 1024,
-    duration: Math.floor(Math.random() * 86400 * 6)
-  })).sort((a, b) => (b.download + b.upload) - (a.download + a.upload))
-)
+    if (onlineTrendRes?.success) {
+      onlineTrendData.value = onlineTrendRes.data || []
+    }
 
-const maxTotal = computed(() => Math.max(...topDevices.value.map(d => d.download + d.upload)))
+    if (trafficStatsRes?.success) {
+      trafficTrendData.value = trafficStatsRes.data || []
+    }
+
+    if (trafficTopRes?.success) {
+      topDevices.value = trafficTopRes.data || []
+    }
+  } catch (error) {
+    console.error('加载统计数据失败:', error)
+    ElMessage.error('加载数据失败，请稍后重试')
+  } finally {
+    loading.value = false
+  }
+}
 
 function refresh() {
-  ElMessage.success('数据已刷新')
+  loadData()
 }
 
-function onExport(cmd) {
-  ElMessage.success(`已导出 ${cmd.toUpperCase()} 报表`)
+async function onExport(cmd) {
+  try {
+    const params = buildParams()
+    const res = await statistics.exportReport(cmd, params)
+    if (res) {
+      ElMessage.success(`已导出 ${cmd.toUpperCase()} 报表`)
+    }
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出失败，请稍后重试')
+  }
 }
 
-onMounted(() => {})
+watch([period, dateRange], () => {
+  loadData()
+}, { deep: true })
+
+watch(rankType, () => {
+  loadData()
+})
+
+onMounted(() => {
+  loadData()
+})
 </script>
 
 <style scoped>

@@ -78,16 +78,18 @@ export const devices = {
 
 export const traffic = {
   getRealtime: (params) => service.get('/traffic/realtime', { params }),
-  getByDevice: (deviceId, params) => service.get(`/traffic/device/${deviceId}`, { params }),
-  getHistory: (params) => service.get('/traffic/history', { params }),
-  getSummary: (params) => service.get('/traffic/summary', { params }),
-  getTop: (params) => service.get('/traffic/top', { params })
+  getRealtimeByDevice: (deviceId) => service.get(`/traffic/realtime/${deviceId}`),
+  getHistoryByDevice: (deviceId, params) => service.get(`/traffic/history/${deviceId}`, { params }),
+  getStats: (params) => service.get('/traffic/stats', { params }),
+  getRankings: (params) => service.get('/traffic/rankings', { params }),
+  getTrend: (params) => service.get('/traffic/trend', { params })
 }
 
 export const history = {
-  getList: (params) => service.get('/connect-history', { params }),
-  getByDevice: (deviceId, params) => service.get(`/connect-history/device/${deviceId}`, { params }),
-  getStats: (params) => service.get('/connect-history/stats', { params })
+  getList: (params) => service.get('/history', { params }),
+  getTimeline: (deviceId, params) => service.get(`/history/timeline/${deviceId}`, { params }),
+  getDaily: (deviceId, params) => service.get(`/history/daily/${deviceId}`, { params }),
+  getDevices: (params) => service.get('/history/devices', { params })
 }
 
 export const parental = {
@@ -112,10 +114,12 @@ export const diagnostic = {
 
 export const statistics = {
   getOverview: (params) => service.get('/statistics/overview', { params }),
-  getDeviceStats: (params) => service.get('/statistics/devices', { params }),
-  getTrafficStats: (params) => service.get('/statistics/traffic', { params }),
-  getConnectionStats: (params) => service.get('/statistics/connections', { params }),
-  getAlertStats: (params) => service.get('/statistics/alerts', { params }),
+  getDevicesByType: (params) => service.get('/statistics/devices/by-type', { params }),
+  getDevicesByGroup: (params) => service.get('/statistics/devices/by-group', { params }),
+  getOnlineTrend: (params) => service.get('/statistics/devices/online-trend', { params }),
+  getNewTrend: (params) => service.get('/statistics/devices/new-trend', { params }),
+  getTrafficTop: (params) => service.get('/statistics/traffic/top', { params }),
+  getMonthlyReport: (params) => service.get('/statistics/monthly-report', { params }),
   exportReport: (type, params) => service.get(`/statistics/export/${type}`, { params, responseType: 'blob' })
 }
 

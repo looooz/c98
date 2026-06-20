@@ -10,7 +10,7 @@
             </div>
           </template>
 
-          <el-table :data="rules" stripe>
+          <el-table :data="rules" stripe v-loading="loading">
             <el-table-column label="#" width="60" type="index" />
             <el-table-column label="规则名称" prop="name" width="180" />
             <el-table-column label="类型" width="100">
@@ -191,6 +191,27 @@
         <el-button type="primary" @click="saveRule">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="showAssignDialog" title="分配设备" width="500px">
+      <el-checkbox-group v-model="selectedDeviceIds">
+        <div class="device-check-list">
+          <div
+            v-for="d in deviceList"
+            :key="d.id"
+            class="device-check-item"
+          >
+            <el-checkbox :label="d.id">
+              <span class="device-name">{{ d.name }}</span>
+              <el-tag size="small" type="info">{{ d.type }}</el-tag>
+            </el-checkbox>
+          </div>
+        </div>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="showAssignDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveAssignDevices">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -198,6 +219,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { parental, devices } from '@/api'
 import {
   formatDuration,
   relativeTime,
@@ -205,8 +227,12 @@ import {
   getDeviceTypeColor
 } from '@/utils/format'
 
+const loading = ref(false)
 const showRuleDialog = ref(false)
+const showAssignDialog = ref(false)
 const editingRule = ref(null)
+const assigningRule = ref(null)
+const selectedDeviceIds = ref([])
 
 const ruleForm = reactive({
   name: '',
@@ -226,39 +252,30 @@ const exampleList = computed(() => {
   return []
 })
 
-const rules = ref([
-  {
-    id: 1, name: '写作业时段', type: 'time', timeStart: '19:00', timeEnd: '21:00',
-    items: [],
-    devices: [
-      { name: '小明的 iPhone', type: 'phone' },
-      { name: 'iPad Air', type: 'tablet' }
-    ],
-    enabled: true
-  },
-  {
-    id: 2, name: '短视频屏蔽', type: 'website',
-    items: ['douyin.com', 'kuaishou.com', 'bilibili.com'],
-    devices: [{ name: 'iPad Air', type: 'tablet' }],
-    enabled: true
-  },
-  {
-    id: 3, name: '游戏时间限制', type: 'time', timeStart: '22:00', timeEnd: '08:00',
-    items: [],
-    devices: [{ name: 'PS5', type: 'console' }],
-    enabled: false
-  },
-  {
-    id: 4, name: '敏感词过滤', type: 'keyword',
-    items: ['赌博', '暴力', '色情'],
-    devices: [
-      { name: '小明的 iPhone', type: 'phone' },
-      { name: '妈妈的手机', type: 'phone' },
-      { name: 'iPad Air', type: 'tablet' }
-    ],
-    enabled: true
+const rules = ref([])
+const deviceList = ref([])
+
+async function loadRules() {
+  try {
+    const res = await parental.getRules()
+    if (res.success) {
+      rules.value = res.data || []
+    }
+  } catch (e) {
+    console.error('加载规则失败:', e)
   }
-])
+}
+
+async function loadDevices() {
+  try {
+    const res = await parental.getDevices()
+    if (res.success) {
+      deviceList.value = res.data || []
+    }
+  } catch (e) {
+    console.error('加载设备失败:', e)
+  }
+}
 
 const overview = ref({
   active: 5,
@@ -283,6 +300,12 @@ const recentBlocks = ref([
 ])
 
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const chartData = [
+  [10800, 7200, 9000, 12600, 8100, 14400, 16200],
+  [5400, 3600, 7200, 4500, 9000, 10800, 9000],
+  [14400, 16200, 12600, 10800, 18000, 21600, 19800],
+  [3600, 1800, 2700, 900, 4500, 7200, 5400]
+]
 const usageChartOption = computed(() => ({
   tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
   legend: { data: members.value.map(m => m.name) },
@@ -297,7 +320,7 @@ const usageChartOption = computed(() => ({
     type: 'bar',
     stack: 'total',
     emphasis: { focus: 'series' },
-    data: Array.from({ length: 7 }, () => 3600 + Math.floor(Math.random() * 4 * 3600)),
+    data: chartData[idx] || [],
     itemStyle: {
       color: ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C'][idx]
     }
@@ -327,47 +350,92 @@ function editRule(row) {
   showRuleDialog.value = true
 }
 
-function saveRule() {
+async function saveRule() {
   if (!ruleForm.name) {
     ElMessage.warning('请输入规则名称')
     return
   }
-  const data = {
-    ...ruleForm,
-    timeStart: ruleForm.timeRange?.[0] || '',
-    timeEnd: ruleForm.timeRange?.[1] || ''
+  loading.value = true
+  try {
+    const data = {
+      name: ruleForm.name,
+      type: ruleForm.type,
+      timeStart: ruleForm.timeRange?.[0] || '',
+      timeEnd: ruleForm.timeRange?.[1] || '',
+      weekdays: ruleForm.weekdays,
+      items: ruleForm.items,
+      enabled: ruleForm.enabled
+    }
+    if (editingRule.value) {
+      await parental.updateRule(editingRule.value.id, data)
+      ElMessage.success('规则已更新')
+    } else {
+      await parental.createRule(data)
+      ElMessage.success('规则已创建')
+    }
+    showRuleDialog.value = false
+    await loadRules()
+  } catch (e) {
+    console.error('保存规则失败:', e)
+  } finally {
+    loading.value = false
   }
-  if (editingRule.value) {
-    Object.assign(editingRule.value, data)
-    ElMessage.success('规则已更新')
-  } else {
-    rules.value.push({ id: Date.now(), ...data, devices: [] })
-    ElMessage.success('规则已创建')
-  }
-  showRuleDialog.value = false
 }
 
-function onToggleRule(row) {
-  ElMessage.success(`规则已${row.enabled ? '启用' : '停用'}`)
+async function onToggleRule(row) {
+  try {
+    await parental.toggleRule(row.id, row.enabled)
+    ElMessage.success(`规则已${row.enabled ? '启用' : '停用'}`)
+  } catch (e) {
+    row.enabled = !row.enabled
+    console.error('切换规则状态失败:', e)
+  }
 }
 
 async function deleteRule(row) {
   try {
     await ElMessageBox.confirm(`确定删除规则「${row.name}」吗？`, '提示', { type: 'warning' })
-    rules.value = rules.value.filter(r => r.id !== row.id)
+    loading.value = true
+    await parental.deleteRule(row.id)
     ElMessage.success('已删除')
-  } catch {}
+    await loadRules()
+  } catch (e) {
+    if (e !== 'cancel') {
+      console.error('删除规则失败:', e)
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 function assignDevices(row) {
-  ElMessage.info('分配设备：' + row.name)
+  assigningRule.value = row
+  selectedDeviceIds.value = (row.devices || []).map(d => d.id)
+  showAssignDialog.value = true
+}
+
+async function saveAssignDevices() {
+  if (!assigningRule.value) return
+  loading.value = true
+  try {
+    await parental.assignDevice(assigningRule.value.id, selectedDeviceIds.value)
+    ElMessage.success('设备分配成功')
+    showAssignDialog.value = false
+    await loadRules()
+  } catch (e) {
+    console.error('分配设备失败:', e)
+  } finally {
+    loading.value = false
+  }
 }
 
 function viewMember(m) {
   ElMessage.info('查看成员详情：' + m.name)
 }
 
-onMounted(() => {})
+onMounted(async () => {
+  await Promise.all([loadRules(), loadDevices()])
+})
 </script>
 
 <style scoped>
@@ -397,4 +465,19 @@ onMounted(() => {})
 .member-name { font-weight: 500; color: #303133; }
 .member-sub { font-size: 12px; color: #909399; }
 .text-green { color: #67c23a; }
+.device-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.device-check-item {
+  padding: 8px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+}
+.device-check-item .device-name {
+  margin-right: 8px;
+}
 </style>

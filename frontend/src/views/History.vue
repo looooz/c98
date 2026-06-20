@@ -13,23 +13,23 @@
           />
         </el-form-item>
         <el-form-item label="设备">
-          <el-select v-model="deviceFilter" placeholder="全部设备" clearable style="width: 200px">
-            <el-option label="主路由器" value="1" />
-            <el-option label="小明的 iPhone 13" value="2" />
-            <el-option label="妈妈的手机" value="3" />
-            <el-option label="MacBook Pro" value="4" />
+          <el-select v-model="deviceFilter" placeholder="全部设备" clearable style="width: 200px" filterable>
+            <el-option
+              v-for="dev in deviceOptions"
+              :key="dev.id"
+              :label="dev.name || dev.mac"
+              :value="dev.id"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="事件类型">
           <el-select v-model="eventType" placeholder="全部" clearable style="width: 150px">
-            <el-option label="接入" value="connect" />
-            <el-option label="断开" value="disconnect" />
-            <el-option label="IP变更" value="ip_change" />
-            <el-option label="封禁" value="block" />
+            <el-option label="接入" value="online" />
+            <el-option label="断开" value="offline" />
           </el-select>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :icon="Search" @click="search">查询</el-button>
+          <el-button type="primary" :icon="Search" @click="search" :loading="loading">查询</el-button>
           <el-button :icon="RefreshLeft" @click="reset">重置</el-button>
         </el-form-item>
       </el-form>
@@ -82,23 +82,23 @@
           </div>
         </div>
       </template>
-      <el-timeline>
+      <el-timeline v-loading="loading">
         <el-timeline-item
           v-for="item in historyList"
           :key="item.id"
-          :timestamp="formatDateTime(item.time)"
-          :type="eventColor(item.type)"
-          :hollow="item.type === 'disconnect'"
+          :timestamp="formatDateTime(item.timestamp)"
+          :type="eventColor(item.event_type)"
+          :hollow="item.event_type === 'offline'"
           placement="top"
         >
           <el-card shadow="never" class="tl-card">
             <div class="tl-header">
               <div class="flex items-center gap-2">
-                <el-tag :type="eventTag(item.type)" size="small" effect="light">
-                  {{ eventLabel(item.type) }}
+                <el-tag :type="eventTag(item.event_type)" size="small" effect="light">
+                  {{ eventLabel(item.event_type) }}
                 </el-tag>
-                <span class="device-emoji">{{ getDeviceIcon(item.deviceType) }}</span>
-                <span class="dev-name">{{ item.deviceName }}</span>
+                <span class="device-emoji">{{ getDeviceIcon(item.device_type) }}</span>
+                <span class="dev-name">{{ item.device_name || formatMac(item.mac) }}</span>
               </div>
               <el-tag type="info" size="small">{{ item.ip }}</el-tag>
             </div>
@@ -132,6 +132,8 @@
           :total="total"
           layout="total, sizes, prev, pager, next, jumper"
           background
+          @size-change="handleSizeChange"
+          @current-change="handlePageChange"
         />
       </div>
     </el-card>
@@ -139,9 +141,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { Search, RefreshLeft, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import { history } from '@/api'
 import {
   formatMac,
   formatDateTime,
@@ -154,84 +157,224 @@ const deviceFilter = ref('')
 const eventType = ref('')
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(86)
+const total = ref(0)
+const loading = ref(false)
+
+const historyList = ref([])
+const deviceOptions = ref([])
+const dailyData = ref([])
 
 const stats = ref({
-  total: 86,
-  connect: 48,
-  disconnect: 38,
-  avgDuration: 4.2
+  total: 0,
+  connect: 0,
+  disconnect: 0,
+  avgDuration: 0
 })
-
-const now = Date.now()
-const historyList = ref([
-  { id: 1, type: 'connect', deviceName: '小明的 iPhone 13', deviceType: 'phone', ip: '192.168.1.101', mac: 'AA:BB:CC:DD:EE:01', vendor: 'Apple', duration: null, signal: 85, band: '5GHz', ssid: 'MyWiFi-5G', time: now - 60000 * 5 },
-  { id: 2, type: 'disconnect', deviceName: '妈妈的手机', deviceType: 'phone', ip: '192.168.1.102', mac: 'AA:BB:CC:DD:EE:02', vendor: 'Huawei', duration: 7200, signal: 70, band: '2.4GHz', ssid: 'MyWiFi', time: now - 60000 * 30 },
-  { id: 3, type: 'connect', deviceName: '工作电脑', deviceType: 'computer', ip: '192.168.1.104', mac: '11:22:33:44:55:02', vendor: 'Dell', duration: null, signal: 90, band: '5GHz', ssid: 'MyWiFi-5G', time: now - 60000 * 120 },
-  { id: 4, type: 'ip_change', deviceName: '小米电视', deviceType: 'tv', ip: '192.168.1.105', mac: '22:33:44:55:66:01', vendor: 'Xiaomi', duration: null, signal: 65, band: '5GHz', ssid: 'MyWiFi-5G', time: now - 60000 * 180 },
-  { id: 5, type: 'block', deviceName: '未知设备', deviceType: 'unknown', ip: '192.168.1.200', mac: 'FF:EE:DD:CC:BB:AA', vendor: 'Unknown', duration: null, time: now - 60000 * 240 },
-  { id: 6, type: 'disconnect', deviceName: 'iPad Air', deviceType: 'tablet', ip: '192.168.1.106', mac: '33:44:55:66:77:01', vendor: 'Apple', duration: 14400, signal: 80, band: '5GHz', ssid: 'MyWiFi-5G', time: now - 60000 * 360 },
-  { id: 7, type: 'connect', deviceName: 'PS5', deviceType: 'console', ip: '192.168.1.107', mac: '44:55:66:77:88:01', vendor: 'Sony', duration: null, signal: 75, band: '5GHz', ssid: 'MyWiFi-5G', time: now - 60000 * 480 }
-])
 
 function eventLabel(t) {
-  return { connect: '设备接入', disconnect: '设备断开', ip_change: 'IP 变更', block: '设备封禁' }[t] || t
+  return { online: '设备接入', offline: '设备断开' }[t] || t
 }
 function eventTag(t) {
-  return { connect: 'success', disconnect: 'info', ip_change: 'warning', block: 'danger' }[t] || 'info'
+  return { online: 'success', offline: 'info' }[t] || 'info'
 }
 function eventColor(t) {
-  return { connect: 'success', disconnect: 'primary', ip_change: 'warning', block: 'danger' }[t] || 'primary'
+  return { online: 'success', offline: 'primary' }[t] || 'primary'
 }
 
-const days = 7
-const dayLabels = computed(() => {
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date(now - (days - 1 - i) * 86400000)
-    return `${d.getMonth() + 1}/${d.getDate()}`
-  })
+const trendChartOption = computed(() => {
+  const days = 7
+  const dayLabels = []
+  const now = new Date()
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86400000)
+    dayLabels.push(`${d.getMonth() + 1}/${d.getDate()}`)
+  }
+
+  const connectData = Array(days).fill(0)
+  const disconnectData = Array(days).fill(0)
+
+  if (dailyData.value && dailyData.value.length > 0) {
+    dailyData.value.forEach(item => {
+      const date = new Date(item.date)
+      const dayStr = `${date.getMonth() + 1}/${date.getDate()}`
+      const idx = dayLabels.indexOf(dayStr)
+      if (idx !== -1) {
+        connectData[idx] = item.online_count || 0
+        disconnectData[idx] = item.offline_count || 0
+      }
+    })
+  }
+
+  return {
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['接入', '断开'] },
+    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+    xAxis: { type: 'category', data: dayLabels },
+    yAxis: { type: 'value' },
+    series: [
+      { name: '接入', type: 'bar', stack: 'total', data: connectData, itemStyle: { color: '#67c23a' } },
+      { name: '断开', type: 'bar', stack: 'total', data: disconnectData, itemStyle: { color: '#f56c6c' } }
+    ]
+  }
 })
 
-const trendChartOption = computed(() => ({
-  tooltip: { trigger: 'axis' },
-  legend: { data: ['接入', '断开'] },
-  grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-  xAxis: { type: 'category', data: dayLabels.value },
-  yAxis: { type: 'value' },
-  series: [
-    { name: '接入', type: 'bar', stack: 'total', data: Array.from({ length: days }, () => 5 + Math.floor(Math.random() * 10)), itemStyle: { color: '#67c23a' } },
-    { name: '断开', type: 'bar', stack: 'total', data: Array.from({ length: days }, () => 4 + Math.floor(Math.random() * 8)), itemStyle: { color: '#f56c6c' } }
-  ]
-}))
+const topBarOption = computed(() => {
+  const topDevices = deviceOptions.value
+    .filter(d => d.connection_count !== undefined)
+    .sort((a, b) => b.connection_count - a.connection_count)
+    .slice(0, 5)
 
-const topBarOption = computed(() => ({
-  tooltip: { trigger: 'axis' },
-  grid: { left: '3%', right: '10%', bottom: '3%', containLabel: true },
-  xAxis: { type: 'value' },
-  yAxis: {
-    type: 'category',
-    data: ['PS5', 'iPad Air', '工作电脑', '妈妈的手机', '小明的 iPhone 13'],
-    inverse: true
-  },
-  series: [{
-    type: 'bar',
-    data: [5, 8, 12, 18, 24],
-    itemStyle: { color: '#409EFF', borderRadius: [0, 4, 4, 0] },
-    label: { show: true, position: 'right', formatter: '{c}次' }
-  }]
-}))
+  return {
+    tooltip: { trigger: 'axis' },
+    grid: { left: '3%', right: '10%', bottom: '3%', containLabel: true },
+    xAxis: { type: 'value' },
+    yAxis: {
+      type: 'category',
+      data: topDevices.map(d => d.name || formatMac(d.mac)),
+      inverse: true
+    },
+    series: [{
+      type: 'bar',
+      data: topDevices.map(d => d.connection_count || 0),
+      itemStyle: { color: '#409EFF', borderRadius: [0, 4, 4, 0] },
+      label: { show: true, position: 'right', formatter: '{c}次' }
+    }]
+  }
+})
+
+function buildParams() {
+  const params = {
+    page: page.value,
+    pageSize: pageSize.value
+  }
+
+  if (deviceFilter.value) {
+    params.deviceId = deviceFilter.value
+  }
+
+  if (eventType.value) {
+    params.eventType = eventType.value
+  }
+
+  if (dateRange.value && dateRange.value.length === 2) {
+    params.startTime = dateRange.value[0].getTime()
+    params.endTime = dateRange.value[1].getTime()
+  }
+
+  return params
+}
+
+async function loadList() {
+  loading.value = true
+  try {
+    const params = buildParams()
+    const res = await history.getList(params)
+    if (res.success) {
+      historyList.value = res.data.list || []
+      total.value = res.data.total || 0
+      updateStats(res.data)
+    }
+  } catch (error) {
+    console.error('加载历史记录失败:', error)
+  } finally {
+    loading.value = false
+  }
+}
+
+function updateStats(data) {
+  stats.value.total = data.total || 0
+  
+  if (data.stats) {
+    stats.value.connect = data.stats.online_count || data.stats.connect || 0
+    stats.value.disconnect = data.stats.offline_count || data.stats.disconnect || 0
+    stats.value.avgDuration = data.stats.avg_duration ? parseFloat((data.stats.avg_duration / 3600).toFixed(1)) : 0
+  } else {
+    let onlineCount = 0
+    let offlineCount = 0
+    let totalDuration = 0
+    let durationCount = 0
+
+    historyList.value.forEach(item => {
+      if (item.event_type === 'online') onlineCount++
+      if (item.event_type === 'offline') offlineCount++
+      if (item.duration) {
+        totalDuration += item.duration
+        durationCount++
+      }
+    })
+
+    stats.value.connect = onlineCount
+    stats.value.disconnect = offlineCount
+    stats.value.avgDuration = durationCount > 0 ? parseFloat((totalDuration / durationCount / 3600).toFixed(1)) : 0
+  }
+}
+
+async function loadDevices() {
+  try {
+    const params = {}
+    if (dateRange.value && dateRange.value.length === 2) {
+      params.startTime = dateRange.value[0].getTime()
+      params.endTime = dateRange.value[1].getTime()
+    }
+    const res = await history.getDevices(params)
+    if (res.success) {
+      deviceOptions.value = res.data.list || res.data || []
+    }
+  } catch (error) {
+    console.error('加载设备列表失败:', error)
+  }
+}
+
+async function loadDailyData() {
+  try {
+    const params = {}
+    if (deviceFilter.value) {
+      const res = await history.getDaily(deviceFilter.value, params)
+      if (res.success) {
+        dailyData.value = res.data.list || res.data || []
+      }
+    } else {
+      dailyData.value = []
+    }
+  } catch (error) {
+    console.error('加载每日数据失败:', error)
+  }
+}
 
 function search() {
-  ElMessage.success('查询完成')
+  page.value = 1
+  loadList()
+  loadDevices()
+  loadDailyData()
 }
+
 function reset() {
   dateRange.value = []
   deviceFilter.value = ''
   eventType.value = ''
+  page.value = 1
+  loadList()
+  loadDevices()
+  loadDailyData()
   ElMessage.info('已重置')
 }
 
-onMounted(() => {})
+function handlePageChange(val) {
+  page.value = val
+  loadList()
+}
+
+function handleSizeChange(val) {
+  pageSize.value = val
+  page.value = 1
+  loadList()
+}
+
+onMounted(() => {
+  loadList()
+  loadDevices()
+  loadDailyData()
+})
 </script>
 
 <style scoped>
