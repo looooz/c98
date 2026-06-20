@@ -7,7 +7,7 @@ const cron = require('node-cron');
 
 const { initializeDatabase, getQuery, runQuery, allQuery } = require('./database');
 const { initWebSocket, broadcast, broadcastScanProgress, broadcastOnlineStatus, broadcastTrafficUpdate, broadcastAlert } = require('./websocket');
-const { mockScan, getVendorFromMac } = require('./services/deviceScanner');
+const { scanLocalNetwork, scanIpRange, getVendorFromMac, getLocalNetworkInfo } = require('./services/deviceScanner');
 
 const PORT = process.env.PORT || 3098;
 const WS_PORT = process.env.WS_PORT || 3099;
@@ -84,139 +84,202 @@ function loadRoutes() {
   console.log(`[Routes] 共加载 ${loadedCount} 个路由模块`);
 }
 
-app.use('/api', (req, res, next) => {
-  res.status(404).json({
-    error: 'Endpoint not found',
-    method: req.method,
-    path: req.path,
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.use((err, req, res, next) => {
-  console.error('[Error]', err);
-  const statusCode = err.statusCode || err.status || 500;
-  const errorResponse = {
-    error: err.message || 'Internal Server Error',
-    timestamp: new Date().toISOString()
-  };
-
-  if (process.env.NODE_ENV === 'development') {
-    errorResponse.stack = err.stack;
-  }
-
-  res.status(statusCode).json(errorResponse);
-});
-
 const scheduledTasks = new Map();
 
 function startAutoScan() {
   console.log('[Scheduler] 正在初始化自动扫描任务...');
 
-  getQuery('SELECT * FROM scan_configs WHERE auto_scan = 1 LIMIT 1')
-    .then(config => {
-      if (!config) {
-        console.log('[Scheduler] 未找到启用自动扫描的配置');
-        return;
-      }
+  const quickScanCron = '*/5 * * * *';
+  const quickTask = cron.schedule(quickScanCron, async () => {
+    console.log('[Scheduler] 触发快速在线状态检查');
+    try {
+      const devices = await allQuery('SELECT id, mac, ip, is_online FROM devices WHERE ignored = 0');
+      if (devices.length === 0) return;
 
-      if (scheduledTasks.has('auto_scan')) {
-        scheduledTasks.get('auto_scan').stop();
-      }
+      const nowIso = new Date().toISOString();
+      let changedCount = 0;
 
-      const scanInterval = config.schedule || '*/5 * * * *';
-      const task = cron.schedule(scanInterval, () => {
-        console.log('[Scheduler] 触发自动扫描任务');
+      for (const dev of devices) {
+        if (!dev.ip) continue;
         try {
-          broadcastScanProgress({
-            status: 'starting',
-            message: '开始自动扫描',
-            timestamp: new Date().toISOString()
-          });
+          const ping = require('ping');
+          const res = await ping.promise.probe(dev.ip, { timeout: 1, extra: ['-c', '1'] });
+          const nowOnline = res.alive ? 1 : 0;
 
-          runQuery(
-            'UPDATE scan_configs SET last_run = ? WHERE id = ?',
-            [new Date().toISOString(), config.id]
-          ).catch(err => {
-            console.error('[Scheduler] 更新扫描时间失败:', err.message);
-          });
+          if (nowOnline !== dev.is_online) {
+            changedCount++;
+            await runQuery('UPDATE devices SET is_online = ?, last_seen = ? WHERE id = ?',
+              [nowOnline, nowIso, dev.id]);
+            await runQuery(
+              'INSERT INTO connection_history (device_id, mac, event_type, timestamp, ip) VALUES (?, ?, ?, ?, ?)',
+              [dev.id, dev.mac, nowOnline ? 'online' : 'offline', nowIso, dev.ip]
+            );
+            broadcast(nowOnline ? 'device_online' : 'device_offline', {
+              id: dev.id, mac: dev.mac, ip: dev.ip, timestamp: nowIso
+            });
+          } else if (nowOnline) {
+            await runQuery('UPDATE devices SET last_seen = ? WHERE id = ?', [nowIso, dev.id]);
+          }
         } catch (e) {
-          console.error('[Scheduler] 扫描任务执行异常:', e.message);
-        }
-      });
-
-      scheduledTasks.set('auto_scan', task);
-      console.log(`[Scheduler] 自动扫描任务已启动，Cron表达式: ${scanInterval}`);
-    })
-    .catch(err => {
-      console.error('[Scheduler] 加载扫描配置失败:', err.message);
-    });
-
-  getQuery("SELECT value FROM system_settings WHERE key = 'scan_interval'")
-    .then(result => {
-      if (result && result.value) {
-        const seconds = parseInt(result.value, 10);
-        if (seconds > 0 && !scheduledTasks.has('quick_scan')) {
-          const minutes = Math.max(1, Math.floor(seconds / 60));
-          const cronExpr = `*/${minutes} * * * *`;
-          const task = cron.schedule(cronExpr, () => {
-            console.log(`[Scheduler] 快速扫描周期: ${seconds}秒`);
-            try {
-              broadcastOnlineStatus({
-                type: 'heartbeat',
-                timestamp: new Date().toISOString()
-              });
-            } catch (e) {
-              // ignore
-            }
-          });
-          scheduledTasks.set('quick_scan', task);
-          console.log(`[Scheduler] 设备状态检查任务已启动，周期: ${seconds}秒`);
+          // 单设备失败不影响其他
         }
       }
-    })
-    .catch(err => {
-      console.error('[Scheduler] 加载扫描间隔配置失败:', err.message);
-    });
+
+      if (changedCount > 0) {
+        broadcast('devices:refresh', { changed: changedCount, timestamp: nowIso });
+      }
+      broadcastOnlineStatus({
+        type: 'status_update',
+        timestamp: nowIso,
+        changed: changedCount
+      });
+      console.log(`[Scheduler] 在线状态检查完成，${changedCount} 台设备状态变化`);
+    } catch (e) {
+      console.error('[Scheduler] 快速扫描异常:', e.message);
+    }
+  });
+  scheduledTasks.set('quick_scan', quickTask);
+  console.log(`[Scheduler] 快速在线检查任务已启动，周期: 5分钟`);
+
+  const fullScanCron = '0 */2 * * *';
+  const fullTask = cron.schedule(fullScanCron, async () => {
+    console.log('[Scheduler] 触发完整局域网扫描');
+    try {
+      broadcastScanProgress({
+        status: 'scheduled', message: '定时扫描开始', timestamp: new Date().toISOString()
+      });
+      const result = await performRealScanAndSave(true);
+      broadcastScanProgress({
+        status: 'completed', ...result, message: `定时扫描完成，发现 ${result.total || 0} 台设备`
+      });
+      broadcast('devices:refresh', {});
+      console.log(`[Scheduler] 完整扫描完成:`, result);
+    } catch (e) {
+      console.error('[Scheduler] 完整扫描异常:', e.message);
+    }
+  });
+  scheduledTasks.set('full_scan', fullTask);
+  console.log(`[Scheduler] 完整扫描任务已启动，周期: 每2小时`);
 }
 
-async function initMockDataIfEmpty() {
+async function performRealScanAndSave(useMockOnFail = true) {
   try {
-    const { total } = await getQuery('SELECT COUNT(*) as total FROM devices');
-    if (total && total > 0) {
-      console.log(`[Init] 数据库已存在 ${total} 台设备，跳过模拟初始化`);
-      return total;
+    console.log('[Init] 正在执行真实局域网扫描...');
+    let scanResult;
+    try {
+      scanResult = await scanLocalNetwork();
+    } catch (scanErr) {
+      console.warn('[Init] 真实扫描失败:', scanErr.message);
+      if (!useMockOnFail) {
+        throw scanErr;
+      }
+      throw scanErr;
     }
-    console.log('[Init] 数据库为空，正在初始化模拟数据...');
-    const mockDevices = mockScan();
+
+    if (!scanResult || !scanResult.devices || scanResult.devices.length === 0) {
+      console.warn('[Init] 扫描结果为空');
+      return { count: 0, method: 'real', empty: true };
+    }
+
     const nowIso = new Date().toISOString();
-    for (const dev of mockDevices) {
-      if (!dev.mac) continue;
-      const vendor = dev.vendor || getVendorFromMac(dev.mac) || 'Unknown';
-      const isOnline = dev.is_online !== false ? 1 : 0;
-      const result = await runQuery(
-        `INSERT INTO devices (mac, ip, hostname, device_type, vendor, os_info, signal_strength, rssi, is_online, first_seen, last_seen, group_name, custom_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          dev.mac, dev.ip || null, dev.hostname || null,
-          dev.device_type || 'unknown', vendor, dev.os_info || null,
-          dev.signal_strength || null, dev.rssi || null, isOnline,
-          nowIso, nowIso, dev.group_name || '未分组', dev.custom_name || null
-        ]
-      );
-      if (isOnline) {
+    const isMock = !!scanResult.isMock;
+    let count = 0;
+
+    for (const dev of scanResult.devices) {
+      if (!dev.mac && !dev.ip) continue;
+
+      let mac = dev.mac;
+      let existing = null;
+      if (mac) {
+        existing = await getQuery('SELECT id, is_online FROM devices WHERE mac = ?', [mac]);
+      }
+
+      const vendor = dev.vendor || (mac ? getVendorFromMac(mac) : null) || 'Unknown';
+      const isOnline = dev.isOnline !== false ? 1 : 0;
+      const deviceType = inferDeviceType(dev.type || dev.device_type || dev.category, vendor, dev.os);
+      const hostname = dev.hostname || dev.name || null;
+      const osInfo = dev.os || dev.os_info || null;
+
+      if (existing) {
         await runQuery(
-          'INSERT INTO connection_history (device_id, mac, event_type, timestamp, ip) VALUES (?, ?, ?, ?, ?)',
-          [result.id, dev.mac, 'online', nowIso, dev.ip || null]
+          'UPDATE devices SET ip = ?, hostname = ?, vendor = ?, device_type = ?, os_info = ?, is_online = ?, last_seen = ? WHERE id = ?',
+          [dev.ip || null, hostname, vendor, deviceType, osInfo, isOnline, nowIso, existing.id]
         );
+        if (isOnline && !existing.is_online) {
+          await runQuery(
+            'INSERT INTO connection_history (device_id, mac, event_type, timestamp, ip) VALUES (?, ?, ?, ?, ?)',
+            [existing.id, mac, 'online', nowIso, dev.ip || null]
+          );
+          broadcast('device_online', { id: existing.id, mac, ip: dev.ip, timestamp: nowIso });
+        }
+      } else if (mac) {
+        const result = await runQuery(
+          `INSERT INTO devices (mac, ip, hostname, device_type, vendor, os_info, signal_strength, rssi, is_online, first_seen, last_seen, group_name, custom_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [mac, dev.ip || null, hostname, deviceType, vendor, osInfo, null, null, isOnline, nowIso, nowIso, '未分组', null]
+        );
+        if (isOnline) {
+          await runQuery(
+            'INSERT INTO connection_history (device_id, mac, event_type, timestamp, ip) VALUES (?, ?, ?, ?, ?)',
+            [result.id, mac, 'online', nowIso, dev.ip || null]
+          );
+        }
+        if (!isMock) {
+          broadcastAlert({
+            type: 'NEW_DEVICE',
+            level: deviceType === 'unknown' ? 'warning' : 'info',
+            title: '发现新设备',
+            message: `新设备接入网络：${vendor}（${hostname || dev.ip}）`,
+            device_id: result.id,
+            mac,
+            data: { vendor, ip: dev.ip, device_type: deviceType, method: 'scan' },
+            read: 0,
+            timestamp: nowIso
+          });
+        }
+        count++;
       }
     }
-    console.log(`[Init] 模拟数据初始化完成，插入 ${mockDevices.length} 台设备`);
-    return mockDevices.length;
+
+    console.log(`[Init] 扫描完成，发现 ${scanResult.devices.length} 台设备，新增 ${count} 台`);
+    return { count, total: scanResult.devices.length, method: isMock ? 'mock-fallback' : 'real' };
   } catch (e) {
-    console.error('[Init] 初始化模拟数据失败:', e.message);
-    return 0;
+    console.error('[Init] 真实扫描初始化失败:', e.message);
+    return { count: 0, method: 'failed', error: e.message };
   }
+}
+
+function inferDeviceType(type, vendor, os) {
+  if (!type) {
+    const vl = (vendor || '').toLowerCase();
+    const ol = (os || '').toLowerCase();
+    if (ol.includes('ios') || vl.includes('apple') && (ol.includes('phone') || type === 'smartphone')) return 'phone';
+    if (ol.includes('tv') || type === 'smarttv' || type === 'tvbox') return 'tv';
+    if (type === 'console' || ol.includes('playstation') || ol.includes('switch') || ol.includes('xbox')) return 'console';
+    if (type === 'camera' || vl.includes('hikvision') || vl.includes('dahua') || type === 'cctv') return 'camera';
+    if (type === 'router' || type === 'gateway' || vl.includes('cisco') || vl.includes('tplink') || vl.includes('huawei') && type !== 'phone') return 'router';
+    if (type === 'smartspeaker' || type === 'light' || type === 'plug' || type === 'climate' || type === 'security' || type === 'sensor') return 'smart_home';
+    if (type === 'laptop' || type === 'desktop' || type === 'sbc' || ol.includes('windows') || ol.includes('macos') || ol.includes('linux')) return 'computer';
+    if (type === 'smartphone' || type === 'mobile' || ol.includes('android')) return 'phone';
+    if (type === 'tablet') return 'tablet';
+    if (type === 'nas' || type === 'storage') return 'computer';
+    if (type === 'iot' || type === 'peripheral' || type === 'printer') return 'smart_home';
+    return 'unknown';
+  }
+  const typeMap = {
+    router: 'router', gateway: 'router',
+    smartphone: 'phone', phone: 'phone', mobile: 'phone',
+    tablet: 'tablet',
+    laptop: 'computer', desktop: 'computer', sbc: 'computer', pc: 'computer',
+    smarttv: 'tv', tvbox: 'tv', tv: 'tv',
+    console: 'console',
+    camera: 'camera', cctv: 'camera',
+    smartspeaker: 'smart_home', light: 'smart_home', plug: 'smart_home',
+    climate: 'smart_home', security: 'smart_home', iot: 'smart_home', sensor: 'smart_home',
+    nas: 'computer', storage: 'computer',
+    printer: 'smart_home', peripheral: 'smart_home'
+  };
+  return typeMap[type] || 'unknown';
 }
 
 const trafficState = {
@@ -229,52 +292,19 @@ function startTrafficMonitoring() {
   if (trafficState.intervalTimer) return;
   console.log('[Traffic] 正在启动实时流量监控...');
 
-  const generateTrafficForDevice = (dev) => {
-    const baseProfile = {
-      router:      { up: 500,  down: 8000, burst: 1.8 },
-      phone:       { up: 80,   down: 500,  burst: 2.5 },
-      computer:    { up: 200,  down: 3000, burst: 3.0 },
-      tablet:      { up: 60,   down: 800,  burst: 2.0 },
-      tv:          { up: 100,  down: 6000, burst: 1.5 },
-      smart_home:  { up: 10,   down: 30,   burst: 1.2 },
-      console:     { up: 300,  down: 2000, burst: 2.2 },
-      camera:      { up: 400,  down: 50,   burst: 1.3 },
-      unknown:     { up: 30,   down: 200,  burst: 1.5 }
-    };
-    const profile = baseProfile[dev.device_type] || baseProfile.unknown;
-    const hour = new Date().getHours();
-    let hourFactor = 0.3;
-    if (hour >= 7 && hour < 12) hourFactor = 0.8;
-    else if (hour >= 12 && hour < 14) hourFactor = 1.0;
-    else if (hour >= 14 && hour < 19) hourFactor = 0.7;
-    else if (hour >= 19 && hour < 23) hourFactor = 1.3;
-    else if (hour >= 23 || hour < 2) hourFactor = 0.5;
-
-    const burstFactor = Math.random() < 0.15 ? profile.burst : 1.0;
-    const jitter = 0.7 + Math.random() * 0.6;
-
-    const isOnline = dev.is_online || dev.online;
-    if (!isOnline) return { upload_speed: 0, download_speed: 0, upload_bytes: 0, download_bytes: 0 };
-
-    const upSpeed = profile.up * hourFactor * burstFactor * jitter * (0.5 + Math.random());
-    const downSpeed = profile.down * hourFactor * burstFactor * jitter * (0.5 + Math.random());
-    const intervalSec = 2;
-    return {
-      upload_speed: Math.round(upSpeed * 100) / 100,
-      download_speed: Math.round(downSpeed * 100) / 100,
-      upload_bytes: Math.round(upSpeed * intervalSec * 1024),
-      download_bytes: Math.round(downSpeed * intervalSec * 1024)
-    };
-  };
+  const { getTotalTrafficRate, estimateDeviceActivity } = require('./services/systemTraffic');
 
   trafficState.intervalTimer = setInterval(async () => {
     try {
-      const devices = await allQuery('SELECT id, mac, device_type, is_online, ip, hostname, vendor, custom_name FROM devices WHERE ignored = 0');
+      const totalRate = await getTotalTrafficRate();
+      const devices = await allQuery(
+        'SELECT id, mac, device_type, is_online, ip, hostname, vendor, custom_name FROM devices WHERE ignored = 0'
+      );
       const nowIso = new Date().toISOString();
       const snapshot = [];
 
       for (const dev of devices) {
-        const traffic = generateTrafficForDevice(dev);
+        const traffic = estimateDeviceActivity(dev, totalRate);
         if (traffic.upload_speed > 0 || traffic.download_speed > 0) {
           await runQuery(
             `INSERT INTO traffic_records (device_id, mac, timestamp, upload_bytes, download_bytes, upload_speed, download_speed)
@@ -295,20 +325,30 @@ function startTrafficMonitoring() {
           download_speed: traffic.download_speed,
           upload_bytes: traffic.upload_bytes,
           download_bytes: traffic.download_bytes,
+          is_estimated: traffic.is_estimated,
+          estimate_confidence: traffic.estimate_confidence,
+          based_on: traffic.based_on,
           timestamp: nowIso
         });
       }
 
-      trafficState.history.push({ timestamp: Date.now(), devices: snapshot });
+      trafficState.history.push({ timestamp: Date.now(), devices: snapshot, totalRate });
       if (trafficState.history.length > 900) {
         trafficState.history.shift();
       }
 
+      const totalUp = snapshot.reduce((s, d) => s + d.upload_speed, 0);
+      const totalDown = snapshot.reduce((s, d) => s + d.download_speed, 0);
+
       broadcastTrafficUpdate({
         timestamp: nowIso,
         snapshot,
-        total_upload: snapshot.reduce((s, d) => s + d.upload_speed, 0),
-        total_download: snapshot.reduce((s, d) => s + d.download_speed, 0),
+        total_upload: totalUp,
+        total_download: totalDown,
+        system_total_upload: totalRate.total_upload_kbps,
+        system_total_download: totalRate.total_download_kbps,
+        system_has_real_data: totalRate.has_real_data,
+        device_traffic_is_estimated: true,
         online_count: snapshot.filter(d => d.is_online).length
       });
     } catch (e) {
@@ -330,13 +370,18 @@ function startTrafficMonitoring() {
         );
         if (agg && (agg.up || agg.down)) {
           const today = new Date().toISOString().slice(0, 10);
-          const existing = await getQuery('SELECT id FROM traffic_stats WHERE device_id = ? AND date = ? AND period_type = ?', [d.device_id, today, 'hourly']);
+          const existing = await getQuery('SELECT id FROM traffic_stats WHERE device_id = ? AND date = ? AND period_type = ?',
+            [d.device_id, today, 'hourly']);
           if (existing) {
-            await runQuery('UPDATE traffic_stats SET total_upload = total_upload + ?, total_download = total_download + ?, peak_upload_speed = MAX(peak_upload_speed, ?), peak_download_speed = MAX(peak_download_speed, ?) WHERE id = ?',
-              [agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0, existing.id]);
+            await runQuery(
+              'UPDATE traffic_stats SET total_upload = total_upload + ?, total_download = total_download + ?, peak_upload_speed = MAX(peak_upload_speed, ?), peak_download_speed = MAX(peak_download_speed, ?) WHERE id = ?',
+              [agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0, existing.id]
+            );
           } else {
-            await runQuery('INSERT INTO traffic_stats (device_id, mac, date, period_type, total_upload, total_download, peak_upload_speed, peak_download_speed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-              [d.device_id, d.mac, today, 'hourly', agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0]);
+            await runQuery(
+              'INSERT INTO traffic_stats (device_id, mac, date, period_type, total_upload, total_download, peak_upload_speed, peak_download_speed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              [d.device_id, d.mac, today, 'hourly', agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0]
+            );
           }
         }
       }
@@ -358,8 +403,10 @@ function startTrafficMonitoring() {
           [d.device_id, yesterday]
         );
         if (agg && (agg.up || agg.down)) {
-          await runQuery('INSERT OR IGNORE INTO traffic_stats (device_id, mac, date, period_type, total_upload, total_download, peak_upload_speed, peak_download_speed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [d.device_id, d.mac, yesterday, 'daily', agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0]);
+          await runQuery(
+            'INSERT OR IGNORE INTO traffic_stats (device_id, mac, date, period_type, total_upload, total_download, peak_upload_speed, peak_download_speed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [d.device_id, d.mac, yesterday, 'daily', agg.up || 0, agg.down || 0, agg.peak_up || 0, agg.peak_down || 0]
+          );
         }
       }
       const cutoff = new Date(Date.now() - 7 * 86400 * 1000).toISOString();
@@ -370,7 +417,7 @@ function startTrafficMonitoring() {
     }
   });
 
-  console.log('[Traffic] 实时流量监控已启动 (2秒采样)');
+  console.log('[Traffic] 实时流量监控已启动 (2秒采样，系统总流量真实，设备级流量为活跃度估算)');
 }
 
 async function startServer() {
@@ -383,7 +430,14 @@ async function startServer() {
     await initializeDatabase();
     console.log('[Database] 数据库初始化完成');
 
-    await initMockDataIfEmpty();
+    const { count: devCount } = await getQuery('SELECT COUNT(*) as count FROM devices') || { count: 0 };
+    if (devCount === 0) {
+      console.log('[Init] 数据库为空，启动首次真实扫描...');
+      await performRealScanAndSave(true);
+    } else {
+      console.log(`[Init] 数据库已有 ${devCount} 台设备，将在后台刷新在线状态`);
+      setImmediate(() => performRealScanAndSave(true).catch(e => console.warn('[Init] 后台扫描刷新失败:', e.message)));
+    }
 
     const server = http.createServer(app);
     const wsServer = http.createServer();
@@ -393,6 +447,31 @@ async function startServer() {
     console.log('[WebSocket] WebSocket服务初始化完成');
 
     loadRoutes();
+
+    app.use('/api', (req, res, next) => {
+      res.status(404).json({
+        error: 'Endpoint not found',
+        method: req.method,
+        path: req.path,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    app.use((err, req, res, next) => {
+      console.error('[Error]', err);
+      const statusCode = err.statusCode || err.status || 500;
+      const errorResponse = {
+        error: err.message || 'Internal Server Error',
+        timestamp: new Date().toISOString()
+      };
+
+      if (process.env.NODE_ENV === 'development') {
+        errorResponse.stack = err.stack;
+      }
+
+      res.status(statusCode).json(errorResponse);
+    });
+
     startAutoScan();
     startTrafficMonitoring();
 

@@ -1,5 +1,20 @@
 <template>
   <div class="page-container">
+    <el-alert
+      title="数据来源说明"
+      type="info"
+      :closable="false"
+      show-icon
+      class="mb-4"
+    >
+      <template #default>
+        <div class="data-source-info">
+          <span>🔌 <strong>系统总流量</strong>：从本机网络接口读取，数据真实</span>
+          <span style="margin-left: 20px;">📊 <strong>设备级流量</strong>：基于设备类型权重和在线状态的活跃度估算，非精确值</span>
+        </div>
+      </template>
+    </el-alert>
+
     <el-card class="mb-4">
       <el-form :inline="true">
         <el-form-item label="时间范围">

@@ -7,7 +7,7 @@
             <div class="stat-icon online">📱</div>
             <div class="stat-info">
               <div class="stat-label">在线设备</div>
-              <div class="stat-value">{{ mockStats.online }}</div>
+              <div class="stat-value">{{ stats.online }}</div>
             </div>
           </div>
         </el-card>
@@ -18,7 +18,7 @@
             <div class="stat-icon total">🔢</div>
             <div class="stat-info">
               <div class="stat-label">设备总数</div>
-              <div class="stat-value">{{ mockStats.total }}</div>
+              <div class="stat-value">{{ stats.total }}</div>
             </div>
           </div>
         </el-card>
@@ -28,8 +28,8 @@
           <div class="stat-content">
             <div class="stat-icon traffic">📊</div>
             <div class="stat-info">
-              <div class="stat-label">今日流量</div>
-              <div class="stat-value">{{ mockStats.todayTraffic }}</div>
+              <div class="stat-label">今日流量 <el-tag size="small" type="info">示例</el-tag></div>
+              <div class="stat-value">{{ stats.todayTraffic }}</div>
             </div>
           </div>
         </el-card>
@@ -39,8 +39,8 @@
           <div class="stat-content">
             <div class="stat-icon alert">🔔</div>
             <div class="stat-info">
-              <div class="stat-label">待处理告警</div>
-              <div class="stat-value">{{ mockStats.alerts }}</div>
+              <div class="stat-label">待处理告警 <el-tag size="small" type="info">示例</el-tag></div>
+              <div class="stat-value">{{ stats.alerts }}</div>
             </div>
           </div>
         </el-card>
@@ -133,7 +133,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   formatBytes,
   getDeviceIcon,
@@ -141,13 +141,33 @@ import {
   getDeviceTypeColor,
   relativeTime
 } from '@/utils/format'
+import { devices as deviceApi } from '@/api'
 
-const mockStats = ref({
-  online: 12,
-  total: 28,
-  todayTraffic: formatBytes(15.8 * 1024 * 1024 * 1024),
-  alerts: 3
+const stats = ref({
+  online: 0,
+  total: 0,
+  todayTraffic: formatBytes(0),
+  alerts: 0
 })
+
+const allDevices = ref([])
+const loading = ref(false)
+
+async function loadDeviceStats() {
+  loading.value = true
+  try {
+    const res = await deviceApi.getList({ pageSize: 100 })
+    if (res.success && res.data) {
+      allDevices.value = res.data.list || []
+      stats.value.total = res.data.total || 0
+      stats.value.online = allDevices.value.filter(d => d.is_online).length
+    }
+  } catch (e) {
+    console.error('加载设备统计失败:', e)
+  } finally {
+    loading.value = false
+  }
+}
 
 const hours = Array.from({ length: 24 }, (_, i) => `${i}:00`)
 
@@ -189,44 +209,61 @@ const trafficChartOption = computed(() => ({
   ]
 }))
 
-const devicePieOption = computed(() => ({
-  tooltip: { trigger: 'item' },
-  legend: { bottom: '5%', left: 'center' },
-  series: [{
-    type: 'pie',
-    radius: ['40%', '70%'],
-    avoidLabelOverlap: false,
-    label: { show: false },
-    emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } },
-    data: [
-      { value: 10, name: '手机', itemStyle: { color: '#409EFF' } },
-      { value: 5, name: '电脑', itemStyle: { color: '#67C23A' } },
-      { value: 3, name: '平板', itemStyle: { color: '#E6A23C' } },
-      { value: 2, name: '电视', itemStyle: { color: '#F56C6C' } },
-      { value: 4, name: '智能家居', itemStyle: { color: '#909399' } },
-      { value: 4, name: '其他', itemStyle: { color: '#BDC3C7' } }
-    ]
-  }]
-}))
+const devicePieOption = computed(() => {
+  const typeCount = {}
+  allDevices.value.forEach(d => {
+    const t = d.device_type || d.type || 'unknown'
+    typeCount[t] = (typeCount[t] || 0) + 1
+  })
+  const data = Object.entries(typeCount).map(([type, count]) => ({
+    value: count,
+    name: getDeviceTypeLabel(type),
+    itemStyle: { color: getDeviceTypeColor(type) }
+  }))
+  if (data.length === 0) {
+    data.push({ value: 1, name: '暂无数据', itemStyle: { color: '#BDC3C7' } })
+  }
+  return {
+    tooltip: { trigger: 'item' },
+    legend: { bottom: '5%', left: 'center' },
+    series: [{
+      type: 'pie',
+      radius: ['40%', '70%'],
+      avoidLabelOverlap: false,
+      label: { show: false },
+      emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } },
+      data
+    }]
+  }
+})
 
-const recentDevices = ref([
-  { id: 1, name: '小明的iPhone', ip: '192.168.1.101', type: 'phone', online: true },
-  { id: 2, name: 'MacBook Pro', ip: '192.168.1.102', type: 'computer', online: true },
-  { id: 3, name: '小米电视', ip: '192.168.1.105', type: 'tv', online: true },
-  { id: 4, name: 'iPad Air', ip: '192.168.1.108', type: 'tablet', online: false },
-  { id: 5, name: '智能门锁', ip: '192.168.1.115', type: 'smart_home', online: true }
-])
+const recentDevices = computed(() => {
+  return [...allDevices.value]
+    .sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen))
+    .slice(0, 5)
+    .map(d => ({
+      id: d.id,
+      name: d.custom_name || d.hostname || d.name || d.ip,
+      ip: d.ip,
+      type: d.device_type || d.type || 'unknown',
+      online: !!d.is_online
+    }))
+})
 
 const recentAlerts = ref([
-  { level: 'high', message: '检测到异常流量：设备 192.168.1.101 流量激增', time: Date.now() - 1000 * 60 * 5 },
-  { level: 'medium', message: '新设备接入网络：未知设备', time: Date.now() - 1000 * 60 * 30 },
-  { level: 'low', message: '家长控制规则已生效：游戏设备已限制', time: Date.now() - 1000 * 60 * 60 * 2 }
+  { level: 'high', message: '检测到异常流量：设备流量激增（示例数据）', time: Date.now() - 1000 * 60 * 5 },
+  { level: 'medium', message: '新设备接入网络（示例数据）', time: Date.now() - 1000 * 60 * 30 },
+  { level: 'low', message: '家长控制规则已生效（示例数据）', time: Date.now() - 1000 * 60 * 60 * 2 }
 ])
 
 const alertLevelTag = (level) => {
   const map = { critical: 'danger', high: 'warning', medium: '', low: 'info' }
   return map[level] || 'info'
 }
+
+onMounted(() => {
+  loadDeviceStats()
+})
 </script>
 
 <style scoped>
